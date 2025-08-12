@@ -1,0 +1,37 @@
+# Project-specific
+CLAUDE.md
+config.json
+*.pem
+*.pfx
+
+# PowerShell
+*.ps1xml
+
+# Azure/DevOps
+.azure/
+.vscode/settings.json
+
+# Logs
+*.log
+logs/
+
+# Temp files
+temp/
+tmp/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Certificates and secrets
+certificates/
+secrets/
+*.key
+*.crt
+*.p12
