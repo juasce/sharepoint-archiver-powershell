@@ -60,18 +60,98 @@ cd scripts
 .\Test-Authentication.ps1 -SharePointUrl "https://tenant.sharepoint.com/sites/test" -StorageAccountName "teststorage" -KeyVaultName "test-keyvault"
 ```
 
-### Azure DevOps Pipeline Usage
+### Azure DevOps Pipeline Setup
+
+Follow this checklist to set up Azure DevOps for Phase 1 testing:
+
+#### Prerequisites Checklist
+
+**☐ 1. Azure Resources Setup**
+- [ ] Azure Key Vault created and accessible
+- [ ] Key Vault contains required secrets:
+  - `azure-client-id` - Azure Entra app registration ID
+  - `azure-tenant-id` - Azure AD tenant ID  
+  - `cert-thumbprint` - Certificate thumbprint
+  - `private-key-pem-content` - Certificate private key in PEM format
+- [ ] Azure Storage Account created
+- [ ] SharePoint site/library accessible
+
+**☐ 2. Azure Entra App Registration**
+- [ ] App registration created in Azure Entra ID
+- [ ] Certificate uploaded to app registration
+- [ ] SharePoint permissions granted to app:
+  - `Sites.FullControl.All` (or `Sites.Read.All` for read-only testing)
+- [ ] Azure Storage permissions configured (Storage Account Contributor role)
+
+**☐ 3. Azure DevOps Project Setup**
+- [ ] Azure DevOps project created
+- [ ] Repository imported/connected
+- [ ] Service connection created (see step 4)
+
+**☐ 4. Create Azure Service Connection**
+1. Go to Project Settings → Service connections
+2. Click "New service connection"
+3. Select "Azure Resource Manager"
+4. Choose "Service principal (automatic)" or "Workload Identity federation"
+5. Select your subscription and resource group
+6. Name it `SharePoint-Archiver-ServiceConnection` (or update pipeline with your name)
+7. Grant access to all pipelines
+8. Verify the service connection has access to:
+   - Key Vault (Key Vault Reader role)
+   - Storage Account (Storage Account Contributor role)
+
+**☐ 5. Pipeline Configuration**
+1. Go to Pipelines → New pipeline
+2. Select "Azure Repos Git" (or your source)
+3. Select your repository
+4. Choose "Existing Azure Pipelines YAML file"
+5. Select `/azure-pipelines.yml`
+6. Review pipeline parameters:
+   - `sharepointUrl`: Your SharePoint site URL
+   - `storageAccountName`: Your storage account name
+   - `keyVaultName`: Your Key Vault name
+
+**☐ 6. Pipeline Variables (Optional)**
+Set these as pipeline variables if you prefer not to use parameters:
+- `sharepointUrl`
+- `storageAccountName` 
+- `keyVaultName`
+
+#### Running the Pipeline
+
+**Manual Run:**
+1. Go to Pipelines → Select your pipeline
+2. Click "Run pipeline"
+3. Set parameter values if using parameters
+4. Click "Run"
+
+**Automatic Triggers:**
+Pipeline runs automatically on:
+- Push to `main` or `develop` branches
+- Pull requests to `main`
+- Changes to `scripts/` folder or `azure-pipelines.yml`
+
+#### Troubleshooting Setup
+
+**Service Connection Issues:**
+- Verify service principal has correct permissions
+- Check subscription and resource group access
+- Ensure service connection is authorized for your pipeline
+
+**Key Vault Access Issues:**
+- Verify Key Vault access policies include the service principal
+- Check secret names match exactly (case-sensitive)
+- Ensure Key Vault allows access from Azure services
+
+**SharePoint Permission Issues:**
+- Verify app registration has SharePoint API permissions
+- Check certificate is not expired
+- Ensure SharePoint URL is accessible from Azure
+
+### Azure DevOps Pipeline Usage Example
 ```yaml
-steps:
-- task: PowerShell@2
-  displayName: 'Test Authentication - Phase 1'
-  inputs:
-    filePath: 'scripts/Test-Authentication.ps1'
-    arguments: >
-      -SharePointUrl "$(sharepointUrl)"
-      -StorageAccountName "$(storageAccountName)" 
-      -KeyVaultName "$(keyVaultName)"
-    pwsh: true
+# This is handled automatically by azure-pipelines.yml
+# No manual YAML needed - just run the pipeline
 ```
 
 ## Expected Output

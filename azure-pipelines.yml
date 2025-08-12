@@ -1,0 +1,146 @@
+# SharePoint Archiver - Phase 1 Authentication Pipeline
+# This pipeline tests the authentication components for SharePoint and Azure Storage
+
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+  paths:
+    include:
+    - scripts/
+    - azure-pipelines.yml
+
+pr:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - scripts/
+    - azure-pipelines.yml
+
+parameters:
+  - name: sharepointUrl
+    displayName: 'SharePoint Site URL'
+    type: string
+    default: 'https://tenant.sharepoint.com/sites/test'
+  
+  - name: storageAccountName
+    displayName: 'Azure Storage Account Name'
+    type: string
+    default: 'teststorage'
+  
+  - name: keyVaultName
+    displayName: 'Azure Key Vault Name'
+    type: string
+    default: 'test-keyvault'
+
+variables:
+  - name: vmImage
+    value: 'windows-latest'
+
+pool:
+  vmImage: $(vmImage)
+
+stages:
+- stage: Phase1_Authentication
+  displayName: 'Phase 1 - Authentication & Connection Test'
+  jobs:
+  - job: AuthenticationTest
+    displayName: 'Test SharePoint and Azure Storage Authentication'
+    steps:
+    
+    # Step 1: Checkout repository
+    - checkout: self
+      displayName: 'Checkout Source Code'
+      clean: true
+
+    # Step 2: Install required PowerShell modules
+    - task: PowerShell@2
+      displayName: 'Install Required PowerShell Modules'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Write-Host "Installing required PowerShell modules..."
+          
+          # Install modules with error handling
+          $modules = @('Az.Accounts', 'Az.KeyVault', 'Az.Storage', 'PnP.PowerShell')
+          
+          foreach ($module in $modules) {
+              try {
+                  Write-Host "Installing module: $module"
+                  Install-Module $module -Scope CurrentUser -Force -AllowClobber
+                  Write-Host "✓ Successfully installed $module"
+              }
+              catch {
+                  Write-Error "Failed to install $module: $_"
+                  exit 1
+              }
+          }
+          
+          Write-Host "All PowerShell modules installed successfully"
+        pwsh: true
+        errorActionPreference: 'stop'
+
+    # Step 3: Authenticate to Azure (uses managed identity in Azure DevOps)
+    - task: AzurePowerShell@5
+      displayName: 'Authenticate to Azure'
+      inputs:
+        azureSubscription: 'SharePoint-Archiver-ServiceConnection' # Replace with your service connection name
+        ScriptType: 'InlineScript'
+        Inline: |
+          Write-Host "Azure authentication successful"
+          Write-Host "Current context:"
+          Get-AzContext | Select-Object Account, Subscription, Tenant | Format-List
+        azurePowerShellVersion: 'LatestVersion'
+        pwsh: true
+
+    # Step 4: Run Phase 1 Authentication Test
+    - task: PowerShell@2
+      displayName: 'Execute Phase 1 Authentication Test'
+      inputs:
+        filePath: 'scripts/Test-Authentication.ps1'
+        arguments: >
+          -SharePointUrl "${{ parameters.sharepointUrl }}"
+          -StorageAccountName "${{ parameters.storageAccountName }}"
+          -KeyVaultName "${{ parameters.keyVaultName }}"
+        pwsh: true
+        errorActionPreference: 'stop'
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+    # Step 5: Publish test results (if test output files are generated)
+    - task: PublishTestResults@2
+      displayName: 'Publish Test Results'
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: 'NUnit'
+        testResultsFiles: '**/TestResults.xml'
+        failTaskOnFailedTests: true
+        testRunTitle: 'SharePoint Archiver Phase 1 Tests'
+      continueOnError: true
+
+    # Step 6: Upload logs as artifacts
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Logs as Artifacts'
+      condition: always()
+      inputs:
+        PathtoPublish: '$(Agent.TempDirectory)'
+        ArtifactName: 'SharePoint-Archiver-Logs'
+        publishLocation: 'Container'
+      continueOnError: true
+
+# Additional stage for future phases (commented out for Phase 1)
+# - stage: Phase2_SingleFileTransfer
+#   displayName: 'Phase 2 - Single File Transfer'
+#   dependsOn: Phase1_Authentication
+#   condition: succeeded()
+#   jobs:
+#   - job: SingleFileTransferTest
+#     displayName: 'Test Single File Transfer with AzCopy'
+#     steps:
+#     - template: templates/single-file-transfer.yml
+#       parameters:
+#         sharepointUrl: ${{ parameters.sharepointUrl }}
+#         storageAccountName: ${{ parameters.storageAccountName }}
