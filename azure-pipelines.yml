@@ -74,7 +74,7 @@ stages:
                   Write-Host "✓ Successfully installed $module"
               }
               catch {
-                  Write-Error "Failed to install $module: $($_.Exception.Message)"
+                  Write-Error "Failed to install ${module}: $($_.Exception.Message)"
                   exit 1
               }
           }
