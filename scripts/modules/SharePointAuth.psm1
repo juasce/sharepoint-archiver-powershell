@@ -29,10 +29,11 @@ function Get-KeyVaultSecrets {
         $secrets.ClientId = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "AZURE-CLIENT-ID" -AsPlainText)
         $secrets.TenantId = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "AZURE-TENANT-ID" -AsPlainText)
         $secrets.CertThumbprint = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "CERT-THUMBPRINT-00" -AsPlainText)
-        $secrets.PrivateKeyPem = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "PRIVATE-KEY-PEM-CONTENT-00" -AsPlainText)
+        $secrets.CertificatePfxBase64 = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "CERTIFICATE-PFX-BASE64" -AsPlainText)
+        $secrets.CertificatePassword = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "CERTIFICATE-PASSWORD" -AsPlainText)
         
         # Validate all secrets were retrieved
-        $requiredKeys = @('ClientId', 'TenantId', 'CertThumbprint', 'PrivateKeyPem')
+        $requiredKeys = @('ClientId', 'TenantId', 'CertThumbprint', 'CertificatePfxBase64', 'CertificatePassword')
         foreach ($key in $requiredKeys) {
             if ([string]::IsNullOrWhiteSpace($secrets[$key])) {
                 throw "Required secret '$key' is missing or empty in Key Vault"
@@ -48,13 +49,16 @@ function Get-KeyVaultSecrets {
     }
 }
 
-function New-CertificateFromPem {
+function New-CertificateFromPfx {
     <#
     .SYNOPSIS
-    Creates a certificate object from PEM content
+    Creates a certificate object from PFX Base64 content
     
-    .PARAMETER PrivateKeyPem
-    PEM formatted private key content
+    .PARAMETER PfxBase64
+    Base64 encoded PFX certificate content
+    
+    .PARAMETER Password
+    Certificate password (can be empty)
     
     .PARAMETER CertThumbprint
     Certificate thumbprint for validation
@@ -65,40 +69,38 @@ function New-CertificateFromPem {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [string]$PrivateKeyPem,
+        [string]$PfxBase64,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Password = "",
         
         [Parameter(Mandatory = $true)]
         [string]$CertThumbprint
     )
     
     try {
-        Write-Host "Creating certificate from PEM content" -ForegroundColor Yellow
+        Write-Host "Creating certificate from PFX content" -ForegroundColor Yellow
         
-        # Create temporary file for PEM content
-        $tempPemFile = [System.IO.Path]::GetTempFileName()
-        Set-Content -Path $tempPemFile -Value $PrivateKeyPem -Encoding UTF8
+        # Convert Base64 to byte array
+        $pfxBytes = [Convert]::FromBase64String($PfxBase64)
         
-        try {
-            # Create certificate from PEM file
-            $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($tempPemFile)
-            
-            # Validate thumbprint matches
-            if ($cert.Thumbprint -ne $CertThumbprint.Replace(" ", "").ToUpper()) {
-                throw "Certificate thumbprint mismatch. Expected: $CertThumbprint, Actual: $($cert.Thumbprint)"
-            }
-            
-            Write-Host "Certificate created successfully with thumbprint: $($cert.Thumbprint)" -ForegroundColor Green
-            return $cert
+        # Create certificate from PFX bytes
+        if ([string]::IsNullOrEmpty($Password)) {
+            $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes)
+        } else {
+            $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, $Password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::UserKeySet)
         }
-        finally {
-            # Clean up temporary file
-            if (Test-Path $tempPemFile) {
-                Remove-Item $tempPemFile -Force
-            }
+        
+        # Validate thumbprint matches
+        if ($cert.Thumbprint -ne $CertThumbprint.Replace(" ", "").ToUpper()) {
+            throw "Certificate thumbprint mismatch. Expected: $CertThumbprint, Actual: $($cert.Thumbprint)"
         }
+        
+        Write-Host "Certificate created successfully with thumbprint: $($cert.Thumbprint)" -ForegroundColor Green
+        return $cert
     }
     catch {
-        Write-Error "Failed to create certificate from PEM content: $($_.Exception.Message)"
+        Write-Error "Failed to create certificate from PFX content: $($_.Exception.Message)"
         throw
     }
 }
@@ -334,9 +336,9 @@ function Initialize-Authentication {
         Write-Host "`n--- Step 1: Retrieving Key Vault Secrets ---" -ForegroundColor Cyan
         $secrets = Get-KeyVaultSecrets -KeyVaultName $KeyVaultName
         
-        # Step 2: Create certificate from PEM content
+        # Step 2: Create certificate from PFX content
         Write-Host "`n--- Step 2: Creating Certificate ---" -ForegroundColor Cyan
-        $certificate = New-CertificateFromPem -PrivateKeyPem $secrets.PrivateKeyPem -CertThumbprint $secrets.CertThumbprint
+        $certificate = New-CertificateFromPfx -PfxBase64 $secrets.CertificatePfxBase64 -Password $secrets.CertificatePassword -CertThumbprint $secrets.CertThumbprint
         
         # Step 3: Connect to SharePoint
         Write-Host "`n--- Step 3: Connecting to SharePoint ---" -ForegroundColor Cyan
@@ -379,7 +381,7 @@ function Initialize-Authentication {
 # Export module functions
 Export-ModuleMember -Function @(
     'Get-KeyVaultSecrets',
-    'New-CertificateFromPem', 
+    'New-CertificateFromPfx', 
     'Connect-SharePointOnline',
     'Get-AzureStorageContext',
     'Test-SharePointConnection',
