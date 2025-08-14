@@ -24,21 +24,21 @@ parameters:
   - name: sharepointUrl
     displayName: 'SharePoint Site URL'
     type: string
-    default: 'https://tenant.sharepoint.com/sites/test'
+    default: 'https://ascendispharmacom-my.sharepoint.com/my?id=%2Fpersonal%2Fjua%5Fascendispharma%5Fcom%2FDocuments%2FDocuments%2FCerts&startedResponseCatch=true'
   
   - name: storageAccountName
     displayName: 'Azure Storage Account Name'
     type: string
-    default: 'teststorage'
+    default: 'stdaardevmedicalaffairs'
   
   - name: keyVaultName
     displayName: 'Azure Key Vault Name'
     type: string
-    default: 'test-keyvault'
+    default: 'kv-sp-archiver-dev-01'
 
 variables:
   - name: vmImage
-    value: 'windows-latest'
+    value: 'selfhosted-lin-latest'
 
 pool:
   vmImage: $(vmImage)
