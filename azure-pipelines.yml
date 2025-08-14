@@ -97,18 +97,19 @@ stages:
         pwsh: true
 
     # Step 4: Run Phase 1 Authentication Test
-    - task: PowerShell@2
+    - task: AzurePowerShell@5
       displayName: 'Execute Phase 1 Authentication Test'
       inputs:
-        filePath: 'scripts/Test-Authentication.ps1'
-        arguments: >
+        azureSubscription: 'sc-sharepoint-archiver-DATA-DEV-wif' # Use same service connection
+        ScriptType: 'FilePath'
+        ScriptPath: 'scripts/Test-Authentication.ps1'
+        ScriptArguments: >
           -SharePointUrl "${{ parameters.sharepointUrl }}"
           -StorageAccountName "${{ parameters.storageAccountName }}"
           -KeyVaultName "${{ parameters.keyVaultName }}"
+        azurePowerShellVersion: 'LatestVersion'
         pwsh: true
         errorActionPreference: 'stop'
-      env:
-        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 
     # Step 5: Publish test results (if test output files are generated)
     - task: PublishTestResults@2
