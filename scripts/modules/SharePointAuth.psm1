@@ -79,14 +79,31 @@ function Get-SharePointUrlInfo {
         elseif ($cleanUrl -match '-my\.sharepoint\.com/my') {
             # OneDrive URL with query parameters (like your test case)
             $urlInfo.SiteType = "OneDrive"
-            # Extract user part from the decoded URL path
-            if ($SharePointUrl -match 'personal%2F([^%]+)%2F' -or $SharePointUrl -match 'personal/([^/]+)/') {
-                $userPart = $matches[1] -replace '_', '_'
+            Write-Host "  Detected OneDrive URL with query parameters" -ForegroundColor Gray
+            
+            # Try multiple patterns to extract user part
+            $userPart = ""
+            if ($SharePointUrl -match 'personal%2F([^%]+)%2F') {
+                $userPart = $matches[1]
+                Write-Host "  Found user from URL encoding: $userPart" -ForegroundColor Gray
+            } elseif ($SharePointUrl -match 'personal%2F([^%]+)') {
+                $userPart = $matches[1] 
+                Write-Host "  Found user from URL encoding (no trailing slash): $userPart" -ForegroundColor Gray
+            } elseif ($cleanUrl -match 'personal/([^/]+)') {
+                $userPart = $matches[1]
+                Write-Host "  Found user from decoded URL: $userPart" -ForegroundColor Gray
+            }
+            
+            if ($userPart) {
+                # Ensure proper underscore format for SharePoint personal site URLs
+                $userPart = $userPart -replace '_', '_'  # Keep underscores as-is
                 $urlInfo.ConnectionUrl = $urlInfo.TenantUrl + "/personal/" + $userPart
                 $urlInfo.SitePath = "/personal/" + $userPart
                 $urlInfo.LibraryPath = "/Documents"  # Default to Documents library
                 $urlInfo.IsValid = $true
                 Write-Host "  Type: OneDrive (from query URL)" -ForegroundColor Cyan
+            } else {
+                Write-Warning "Could not extract user part from OneDrive URL"
             }
         }
         elseif ($cleanUrl -match '\.sharepoint\.com/sites/') {
