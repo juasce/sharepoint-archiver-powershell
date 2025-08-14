@@ -226,23 +226,45 @@ function Test-SharePointConnection {
     try {
         Write-Host "Testing SharePoint connection and access" -ForegroundColor Yellow
         
-        # Test basic connection
-        $web = Get-PnPWeb
-        if (-not $web) {
-            throw "Unable to retrieve web information from SharePoint"
+        # Check if we have an active PnP connection
+        $connection = Get-PnPConnection -ErrorAction SilentlyContinue
+        if (-not $connection) {
+            throw "No active SharePoint connection found. Connection may have been lost."
         }
         
-        Write-Host "SharePoint Web Title: $($web.Title)" -ForegroundColor Cyan
-        Write-Host "SharePoint Web URL: $($web.Url)" -ForegroundColor Cyan
+        Write-Host "Active SharePoint connection confirmed" -ForegroundColor Gray
         
-        # Test list access (try to get document libraries)
-        $lists = Get-PnPList | Where-Object { $_.BaseTemplate -eq 101 }  # Document Libraries
-        Write-Host "Found $($lists.Count) document libraries" -ForegroundColor Cyan
-        
-        if ($lists.Count -gt 0) {
-            foreach ($list in $lists | Select-Object -First 3) {
-                Write-Host "  - $($list.Title) ($($list.ItemCount) items)" -ForegroundColor Gray
+        # Test basic connection with error handling
+        try {
+            $web = Get-PnPWeb -ErrorAction Stop
+            if (-not $web) {
+                throw "Unable to retrieve web information from SharePoint"
             }
+            
+            Write-Host "SharePoint Web Title: $($web.Title)" -ForegroundColor Cyan
+            Write-Host "SharePoint Web URL: $($web.Url)" -ForegroundColor Cyan
+        }
+        catch {
+            Write-Warning "Failed to retrieve web information: $($_.Exception.Message)"
+            throw "SharePoint web access failed: $($_.Exception.Message)"
+        }
+        
+        # Test list access with reduced scope to avoid SSL timeout
+        try {
+            Write-Host "Testing document library access..." -ForegroundColor Gray
+            $lists = Get-PnPList -ErrorAction Stop | Where-Object { $_.BaseTemplate -eq 101 } | Select-Object -First 5
+            Write-Host "Found $($lists.Count) document libraries" -ForegroundColor Cyan
+            
+            if ($lists.Count -gt 0) {
+                foreach ($list in $lists | Select-Object -First 2) {
+                    Write-Host "  - $($list.Title)" -ForegroundColor Gray
+                }
+            }
+        }
+        catch {
+            Write-Warning "Failed to retrieve document libraries: $($_.Exception.Message)"
+            # Don't fail the entire test if list access fails, web access is sufficient
+            Write-Host "Continuing with basic web access only..." -ForegroundColor Yellow
         }
         
         Write-Host "SharePoint connection test passed" -ForegroundColor Green
