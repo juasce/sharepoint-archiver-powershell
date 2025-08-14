@@ -87,7 +87,7 @@ stages:
     - task: AzurePowerShell@5
       displayName: 'Authenticate to Azure'
       inputs:
-        azureSubscription: 'SharePoint-Archiver-ServiceConnection' # Replace with your service connection name
+        azureSubscription: 'sc-sharepoint-archiver-DATA-DEV-wif' # Replace with your service connection name
         ScriptType: 'InlineScript'
         Inline: |
           Write-Host "Azure authentication successful"
