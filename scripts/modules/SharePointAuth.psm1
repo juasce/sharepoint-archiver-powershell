@@ -26,10 +26,10 @@ function Get-KeyVaultSecrets {
         $secrets = @{}
         
         # Get required secrets
-        $secrets.ClientId = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "azure-client-id" -AsPlainText)
-        $secrets.TenantId = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "azure-tenant-id" -AsPlainText)
-        $secrets.CertThumbprint = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "cert-thumbprint" -AsPlainText)
-        $secrets.PrivateKeyPem = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "private-key-pem-content" -AsPlainText)
+        $secrets.ClientId = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "AZURE-CLIENT-ID" -AsPlainText)
+        $secrets.TenantId = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "AZURE-TENANT-ID" -AsPlainText)
+        $secrets.CertThumbprint = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "CERT-THUMBPRINT-00" -AsPlainText)
+        $secrets.PrivateKeyPem = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "PRIVATE-KEY-PEM-CONTENT-00" -AsPlainText)
         
         # Validate all secrets were retrieved
         $requiredKeys = @('ClientId', 'TenantId', 'CertThumbprint', 'PrivateKeyPem')
