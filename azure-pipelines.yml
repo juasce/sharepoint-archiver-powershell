@@ -38,11 +38,7 @@ parameters:
 
 variables:
   - name: agentPool
-<<<<<<< HEAD
-    value: 'sselfhosted-lin-latest'
-=======
     value: 'selfhosted-win-latest'
->>>>>>> 8339887008ef189abc4e4bf3f25cf942a8df1266
 
 pool:
   name: $(agentPool)
