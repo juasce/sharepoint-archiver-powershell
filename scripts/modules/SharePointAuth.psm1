@@ -376,19 +376,45 @@ function Get-AzureStorageContext {
             throw "No active Azure context found"
         }
         
+        # Check if Storage resource provider is registered
+        Write-Host "Checking Azure resource provider registration..." -ForegroundColor Gray
+        try {
+            $storageProvider = Get-AzResourceProvider -ProviderNamespace "Microsoft.Storage" -ErrorAction SilentlyContinue
+            $isRegistered = $storageProvider | Where-Object { $_.RegistrationState -eq "Registered" }
+            if (-not $isRegistered) {
+                Write-Warning "Microsoft.Storage resource provider is not registered in this subscription"
+                Write-Host "This may explain why Get-AzStorageAccount returns 0 results" -ForegroundColor Yellow
+            } else {
+                Write-Host "✓ Microsoft.Storage resource provider is registered" -ForegroundColor Green
+            }
+        }
+        catch {
+            Write-Warning "Could not check resource provider status: $($_.Exception.Message)"
+        }
+        
         # List all accessible storage accounts for diagnostics
         Write-Host "Searching for storage account across all accessible subscriptions..." -ForegroundColor Gray
         $allStorageAccounts = @()
         
         try {
+            # Try different methods to get storage accounts
             $allStorageAccounts = Get-AzStorageAccount -ErrorAction SilentlyContinue
+            
+            if ($allStorageAccounts.Count -eq 0) {
+                # Alternative method using resource graph or direct REST calls
+                Write-Host "Trying alternative storage account discovery..." -ForegroundColor Gray
+                $allStorageAccounts = Get-AzResource -ResourceType "Microsoft.Storage/storageAccounts" -ErrorAction SilentlyContinue
+            }
+            
             Write-Host "Found $($allStorageAccounts.Count) total storage accounts in current subscription" -ForegroundColor Gray
             
             if ($allStorageAccounts.Count -gt 0) {
                 Write-Host "Available storage accounts:" -ForegroundColor Gray
                 foreach ($sa in $allStorageAccounts | Select-Object -First 10) {
-                    $match = if ($sa.StorageAccountName -eq $StorageAccountName) { " ← TARGET" } else { "" }
-                    Write-Host "  - $($sa.StorageAccountName) (RG: $($sa.ResourceGroupName))$match" -ForegroundColor Gray
+                    $saName = if ($sa.StorageAccountName) { $sa.StorageAccountName } else { $sa.Name }
+                    $saRg = if ($sa.ResourceGroupName) { $sa.ResourceGroupName } else { ($sa.ResourceId -split '/')[4] }
+                    $match = if ($saName -eq $StorageAccountName) { " ← TARGET" } else { "" }
+                    Write-Host "  - $saName (RG: $saRg)$match" -ForegroundColor Gray
                 }
             }
         }
@@ -644,7 +670,7 @@ function Test-AzureStorageConnection {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [Microsoft.WindowsAzure.Commands.Storage.AzureStorageContext]$StorageContext,
+        [Microsoft.Azure.Commands.Common.Authentication.Abstractions.IStorageContext]$StorageContext,
         
         [Parameter(Mandatory = $true)]
         [string]$StorageAccountName
