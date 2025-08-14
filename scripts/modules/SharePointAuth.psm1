@@ -153,7 +153,9 @@ function Connect-SharePointOnline {
         if ([string]::IsNullOrEmpty($CertificatePassword)) {
             Connect-PnPOnline -Url $SharePointUrl -ClientId $ClientId -Tenant $TenantId -CertificateBase64Encoded $CertificateBase64
         } else {
-            Connect-PnPOnline -Url $SharePointUrl -ClientId $ClientId -Tenant $TenantId -CertificateBase64Encoded $CertificateBase64 -CertificatePassword $CertificatePassword
+            # Convert password to SecureString
+            $securePassword = ConvertTo-SecureString $CertificatePassword -AsPlainText -Force
+            Connect-PnPOnline -Url $SharePointUrl -ClientId $ClientId -Tenant $TenantId -CertificateBase64Encoded $CertificateBase64 -CertificatePassword $securePassword
         }
         
         Write-Host "Successfully connected to SharePoint Online" -ForegroundColor Green
