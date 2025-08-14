@@ -116,8 +116,8 @@ try {
                 Write-Host "  Tenant: $($azContext.Tenant.Id)" -ForegroundColor Gray
                 Write-Host "  Subscription: $($azContext.Subscription.Name)" -ForegroundColor Gray
             } else {
-                Write-Host "⚠ Not connected to Azure. Attempting managed identity..." -ForegroundColor Yellow
-                Connect-AzAccount -Identity -ErrorAction SilentlyContinue
+                Write-Host "⚠ Not connected to Azure. Skipping connection attempt in pipeline context..." -ForegroundColor Yellow
+                Write-Host "  (Authentication should be handled by Azure DevOps service connection)" -ForegroundColor Gray
             }
         }
         catch {
