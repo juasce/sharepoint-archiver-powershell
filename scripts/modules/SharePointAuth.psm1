@@ -3,6 +3,156 @@
 
 #Requires -Modules Az.KeyVault, Az.Storage, Az.Accounts, PnP.PowerShell
 
+function Get-SharePointUrlInfo {
+    <#
+    .SYNOPSIS
+    Parses and normalizes SharePoint URLs for different site types
+    
+    .PARAMETER SharePointUrl
+    Original SharePoint URL that could be OneDrive, Site, Document Library, or folder URL
+    
+    .OUTPUTS
+    Hashtable containing parsed URL information and normalized connection URL
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SharePointUrl
+    )
+    
+    try {
+        Write-Host "Parsing SharePoint URL: $SharePointUrl" -ForegroundColor Yellow
+        
+        # Remove query parameters first
+        $cleanUrl = if ($SharePointUrl.Contains('?')) {
+            $SharePointUrl.Split('?')[0]
+        } else {
+            $SharePointUrl
+        }
+        
+        # Decode URL-encoded characters
+        $cleanUrl = [System.Web.HttpUtility]::UrlDecode($cleanUrl)
+        
+        # Initialize result object
+        $urlInfo = @{
+            OriginalUrl = $SharePointUrl
+            CleanUrl = $cleanUrl
+            ConnectionUrl = ""
+            SiteType = ""
+            TenantUrl = ""
+            SitePath = ""
+            LibraryPath = ""
+            FolderPath = ""
+            IsValid = $false
+        }
+        
+        # Extract tenant URL
+        if ($cleanUrl -match '^(https://[^/]+)') {
+            $urlInfo.TenantUrl = $matches[1]
+        } else {
+            throw "Invalid SharePoint URL format: Unable to extract tenant URL"
+        }
+        
+        # Determine site type and parse accordingly
+        Write-Host "Analyzing URL type..." -ForegroundColor Gray
+        
+        if ($cleanUrl -match '-my\.sharepoint\.com/personal/') {
+            # OneDrive Personal Site
+            $urlInfo.SiteType = "OneDrive"
+            if ($cleanUrl -match '(https://[^/]+-my\.sharepoint\.com/personal/[^/]+)') {
+                $urlInfo.ConnectionUrl = $matches[1]
+                $urlInfo.SitePath = "/personal/" + ($matches[1] -split '/personal/')[1]
+                
+                # Extract library and folder paths if present
+                $remainder = $cleanUrl -replace [regex]::Escape($matches[1]), ""
+                if ($remainder -match '^/Documents/(.*)') {
+                    $urlInfo.LibraryPath = "/Documents"
+                    $urlInfo.FolderPath = $matches[1]
+                } elseif ($remainder -match '^/Documents$') {
+                    $urlInfo.LibraryPath = "/Documents"
+                }
+                
+                $urlInfo.IsValid = $true
+                Write-Host "  Type: OneDrive Personal Site" -ForegroundColor Cyan
+            }
+        }
+        elseif ($cleanUrl -match '-my\.sharepoint\.com/my') {
+            # OneDrive URL with query parameters (like your test case)
+            $urlInfo.SiteType = "OneDrive"
+            # Extract user part from the decoded URL path
+            if ($SharePointUrl -match 'personal%2F([^%]+)%2F' -or $SharePointUrl -match 'personal/([^/]+)/') {
+                $userPart = $matches[1] -replace '_', '_'
+                $urlInfo.ConnectionUrl = $urlInfo.TenantUrl + "/personal/" + $userPart
+                $urlInfo.SitePath = "/personal/" + $userPart
+                $urlInfo.LibraryPath = "/Documents"  # Default to Documents library
+                $urlInfo.IsValid = $true
+                Write-Host "  Type: OneDrive (from query URL)" -ForegroundColor Cyan
+            }
+        }
+        elseif ($cleanUrl -match '\.sharepoint\.com/sites/') {
+            # Team Site or Communication Site
+            $urlInfo.SiteType = "TeamSite"
+            if ($cleanUrl -match '(https://[^/]+\.sharepoint\.com/sites/[^/]+)') {
+                $urlInfo.ConnectionUrl = $matches[1]
+                $urlInfo.SitePath = "/sites/" + ($matches[1] -split '/sites/')[1]
+                
+                # Extract library and folder paths if present
+                $remainder = $cleanUrl -replace [regex]::Escape($matches[1]), ""
+                if ($remainder -match '^/([^/]+)/(.*)') {
+                    $urlInfo.LibraryPath = "/" + $matches[1]
+                    $urlInfo.FolderPath = $matches[2]
+                } elseif ($remainder -match '^/([^/]+)$') {
+                    $urlInfo.LibraryPath = "/" + $matches[1]
+                }
+                
+                $urlInfo.IsValid = $true
+                Write-Host "  Type: Team/Communication Site" -ForegroundColor Cyan
+            }
+        }
+        elseif ($cleanUrl -match '\.sharepoint\.com/(?!sites/)(?!personal/)') {
+            # Root site or other site collection
+            $urlInfo.SiteType = "RootSite"
+            if ($cleanUrl -match '(https://[^/]+\.sharepoint\.com)') {
+                $urlInfo.ConnectionUrl = $matches[1]
+                $urlInfo.SitePath = "/"
+                
+                # Extract library and folder paths
+                $remainder = $cleanUrl -replace [regex]::Escape($matches[1]), ""
+                if ($remainder -match '^/([^/]+)/(.*)') {
+                    $urlInfo.LibraryPath = "/" + $matches[1]
+                    $urlInfo.FolderPath = $matches[2]
+                } elseif ($remainder -match '^/([^/]+)$') {
+                    $urlInfo.LibraryPath = "/" + $matches[1]
+                }
+                
+                $urlInfo.IsValid = $true
+                Write-Host "  Type: Root Site Collection" -ForegroundColor Cyan
+            }
+        }
+        
+        if (-not $urlInfo.IsValid) {
+            throw "Unsupported SharePoint URL format: $SharePointUrl"
+        }
+        
+        # Display parsed information
+        Write-Host "  Connection URL: $($urlInfo.ConnectionUrl)" -ForegroundColor Gray
+        Write-Host "  Site Path: $($urlInfo.SitePath)" -ForegroundColor Gray
+        if ($urlInfo.LibraryPath) {
+            Write-Host "  Library: $($urlInfo.LibraryPath)" -ForegroundColor Gray
+        }
+        if ($urlInfo.FolderPath) {
+            Write-Host "  Folder: $($urlInfo.FolderPath)" -ForegroundColor Gray
+        }
+        
+        Write-Host "Successfully parsed SharePoint URL" -ForegroundColor Green
+        return $urlInfo
+    }
+    catch {
+        Write-Error "Failed to parse SharePoint URL: $($_.Exception.Message)"
+        throw
+    }
+}
+
 function Get-KeyVaultSecrets {
     <#
     .SYNOPSIS
@@ -147,15 +297,23 @@ function Connect-SharePointOnline {
     )
     
     try {
-        Write-Host "Connecting to SharePoint Online: $SharePointUrl" -ForegroundColor Yellow
+        # Parse and normalize the SharePoint URL
+        $urlInfo = Get-SharePointUrlInfo -SharePointUrl $SharePointUrl
+        $connectionUrl = $urlInfo.ConnectionUrl
+        
+        Write-Host "Connecting to SharePoint Online: $connectionUrl" -ForegroundColor Yellow
+        Write-Host "Site Type: $($urlInfo.SiteType)" -ForegroundColor Gray
+        
+        # Set TLS 1.2 for SSL compatibility
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
         
         # Connect using certificate authentication with Base64 encoded certificate
         if ([string]::IsNullOrEmpty($CertificatePassword)) {
-            Connect-PnPOnline -Url $SharePointUrl -ClientId $ClientId -Tenant $TenantId -CertificateBase64Encoded $CertificateBase64
+            Connect-PnPOnline -Url $connectionUrl -ClientId $ClientId -Tenant $TenantId -CertificateBase64Encoded $CertificateBase64
         } else {
             # Convert password to SecureString
             $securePassword = ConvertTo-SecureString $CertificatePassword -AsPlainText -Force
-            Connect-PnPOnline -Url $SharePointUrl -ClientId $ClientId -Tenant $TenantId -CertificateBase64Encoded $CertificateBase64 -CertificatePassword $securePassword
+            Connect-PnPOnline -Url $connectionUrl -ClientId $ClientId -Tenant $TenantId -CertificateBase64Encoded $CertificateBase64 -CertificatePassword $securePassword
         }
         
         Write-Host "Successfully connected to SharePoint Online" -ForegroundColor Green
@@ -414,6 +572,7 @@ function Initialize-Authentication {
 
 # Export module functions
 Export-ModuleMember -Function @(
+    'Get-SharePointUrlInfo',
     'Get-KeyVaultSecrets',
     'New-CertificateFromPfx', 
     'Connect-SharePointOnline',
