@@ -37,11 +37,11 @@ parameters:
     default: 'kv-sp-archiver-dev-01'
 
 variables:
-  - name: vmImage
-    value: 'selfhosted-lin-latest'
+  - name: agentPool
+    value: 'selfhosted-win-latest'
 
 pool:
-  vmImage: $(vmImage)
+  name: $(agentPool)
 
 stages:
 - stage: Phase1_Authentication
