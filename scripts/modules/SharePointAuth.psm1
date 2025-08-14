@@ -119,8 +119,11 @@ function Connect-SharePointOnline {
     .PARAMETER TenantId
     Azure AD tenant ID
     
-    .PARAMETER Certificate
-    X509Certificate2 object for authentication
+    .PARAMETER CertificateBase64
+    Base64 encoded certificate for authentication
+    
+    .PARAMETER CertificatePassword
+    Certificate password
     
     .OUTPUTS
     Boolean indicating success of connection
@@ -137,14 +140,21 @@ function Connect-SharePointOnline {
         [string]$TenantId,
         
         [Parameter(Mandatory = $true)]
-        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
+        [string]$CertificateBase64,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$CertificatePassword = ""
     )
     
     try {
         Write-Host "Connecting to SharePoint Online: $SharePointUrl" -ForegroundColor Yellow
         
-        # Connect using certificate authentication
-        Connect-PnPOnline -Url $SharePointUrl -ClientId $ClientId -Tenant $TenantId -Certificate $Certificate
+        # Connect using certificate authentication with Base64 encoded certificate
+        if ([string]::IsNullOrEmpty($CertificatePassword)) {
+            Connect-PnPOnline -Url $SharePointUrl -ClientId $ClientId -Tenant $TenantId -CertificateBase64Encoded $CertificateBase64
+        } else {
+            Connect-PnPOnline -Url $SharePointUrl -ClientId $ClientId -Tenant $TenantId -CertificateBase64Encoded $CertificateBase64 -CertificatePassword $CertificatePassword
+        }
         
         Write-Host "Successfully connected to SharePoint Online" -ForegroundColor Green
         return $true
@@ -342,7 +352,7 @@ function Initialize-Authentication {
         
         # Step 3: Connect to SharePoint
         Write-Host "`n--- Step 3: Connecting to SharePoint ---" -ForegroundColor Cyan
-        $sharePointConnected = Connect-SharePointOnline -SharePointUrl $SharePointUrl -ClientId $secrets.ClientId -TenantId $secrets.TenantId -Certificate $certificate
+        $sharePointConnected = Connect-SharePointOnline -SharePointUrl $SharePointUrl -ClientId $secrets.ClientId -TenantId $secrets.TenantId -CertificateBase64 $secrets.CertificatePfxBase64 -CertificatePassword $secrets.CertificatePassword
         $result.SharePointConnected = $sharePointConnected
         
         # Step 4: Test SharePoint connection
