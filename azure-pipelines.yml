@@ -37,11 +37,11 @@ parameters:
     default: 'test-keyvault'
 
 variables:
-  - name: vmImage
-    value: 'windows-latest'
+  - name: agentPool
+    value: 'sselfhosted-lin-latest'
 
 pool:
-  vmImage: $(vmImage)
+  name: $(agentPool)
 
 stages:
 - stage: Phase1_Authentication
@@ -74,7 +74,7 @@ stages:
                   Write-Host "✓ Successfully installed $module"
               }
               catch {
-                  Write-Error "Failed to install $module: $_"
+                  Write-Error "Failed to install $module: $($_.Exception.Message)"
                   exit 1
               }
           }
