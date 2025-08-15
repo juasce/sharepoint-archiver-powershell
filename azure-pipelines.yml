@@ -31,6 +31,11 @@ parameters:
     type: string
     default: 'stdaardevmedicalaffairs'
   
+  - name: containerName
+    displayName: 'Azure Storage Container Name'
+    type: string
+    default: 'medicalinformation'
+  
   - name: keyVaultName
     displayName: 'Azure Key Vault Name'
     type: string
@@ -132,16 +137,94 @@ stages:
         publishLocation: 'Container'
       continueOnError: true
 
-# Additional stage for future phases (commented out for Phase 1)
-# - stage: Phase2_SingleFileTransfer
-#   displayName: 'Phase 2 - Single File Transfer'
-#   dependsOn: Phase1_Authentication
-#   condition: succeeded()
-#   jobs:
-#   - job: SingleFileTransferTest
-#     displayName: 'Test Single File Transfer with AzCopy'
-#     steps:
-#     - template: templates/single-file-transfer.yml
-#       parameters:
-#         sharepointUrl: ${{ parameters.sharepointUrl }}
-#         storageAccountName: ${{ parameters.storageAccountName }}
+- stage: Phase2_SingleFileTransfer
+  displayName: 'Phase 2 - Single File Transfer'
+  dependsOn: Phase1_Authentication
+  condition: succeeded()
+  jobs:
+  - job: SingleFileTransferTest
+    displayName: 'Test Single File Transfer with AzCopy'
+    steps:
+    
+    # Step 1: Checkout repository
+    - checkout: self
+      displayName: 'Checkout Source Code'
+      clean: true
+
+    # Step 2: Install required PowerShell modules
+    - task: PowerShell@2
+      displayName: 'Install Required PowerShell Modules'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Write-Host "Installing required PowerShell modules..."
+          
+          # Install modules with error handling
+          $modules = @('Az.Accounts', 'Az.KeyVault', 'Az.Storage', 'PnP.PowerShell')
+          
+          foreach ($module in $modules) {
+              try {
+                  Write-Host "Installing module: $module"
+                  Install-Module $module -Scope CurrentUser -Force -AllowClobber
+                  Write-Host "✓ Successfully installed $module"
+              }
+              catch {
+                  Write-Error "Failed to install ${module}: $($_.Exception.Message)"
+                  exit 1
+              }
+          }
+          
+          Write-Host "All PowerShell modules installed successfully"
+        pwsh: true
+        errorActionPreference: 'stop'
+
+    # Step 3: Authenticate to Azure
+    - task: AzurePowerShell@5
+      displayName: 'Authenticate to Azure'
+      inputs:
+        azureSubscription: 'sc-sharepoint-archiver-DATA-DEV-wif'
+        ScriptType: 'InlineScript'
+        Inline: |
+          Write-Host "Azure authentication successful"
+          Write-Host "Current context:"
+          Get-AzContext | Select-Object Account, Subscription, Tenant | Format-List
+        azurePowerShellVersion: 'LatestVersion'
+        pwsh: true
+
+    # Step 4: Run Phase 2 Single File Transfer Test
+    - task: AzurePowerShell@5
+      displayName: 'Execute Phase 2 Single File Transfer Test'
+      inputs:
+        azureSubscription: 'sc-sharepoint-archiver-DATA-DEV-wif'
+        ScriptType: 'FilePath'
+        ScriptPath: 'scripts/Test-SingleFileTransfer.ps1'
+        ScriptArguments: >
+          -SharePointUrl "${{ parameters.sharepointUrl }}"
+          -StorageAccountName "${{ parameters.storageAccountName }}"
+          -ContainerName "${{ parameters.containerName }}"
+          -KeyVaultName "${{ parameters.keyVaultName }}"
+          -Recursive:$false
+        azurePowerShellVersion: 'LatestVersion'
+        pwsh: true
+        errorActionPreference: 'stop'
+
+    # Step 5: Publish test results
+    - task: PublishTestResults@2
+      displayName: 'Publish Test Results'
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: 'NUnit'
+        testResultsFiles: '**/TestResults.xml'
+        failTaskOnFailedTests: true
+        testRunTitle: 'SharePoint Archiver Phase 2 Tests'
+      continueOnError: true
+
+    # Step 6: Upload logs as artifacts
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Logs as Artifacts'
+      condition: always()
+      inputs:
+        PathtoPublish: '$(Agent.TempDirectory)'
+        ArtifactName: 'SharePoint-Archiver-Phase2-Logs'
+        publishLocation: 'Container'
+      continueOnError: true

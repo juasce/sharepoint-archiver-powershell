@@ -111,7 +111,15 @@ try {
         $files = $files | Select-Object -First 1
     }
     
-    $response = Read-Host "Proceed with file transfer test? (y/N)"
+    # Auto-proceed for automated pipeline execution
+    # Check if running in Azure DevOps (has TF_BUILD environment variable)
+    if ($env:TF_BUILD -eq "True") {
+        Write-Host "Running in Azure DevOps pipeline - auto-proceeding with file transfer test" -ForegroundColor Yellow
+        $response = 'y'
+    } else {
+        $response = Read-Host "Proceed with file transfer test? (y/N)"
+    }
+    
     if ($response -ne 'y' -and $response -ne 'Y') {
         Write-Host "File transfer test skipped by user." -ForegroundColor Yellow
         Write-Host ""
