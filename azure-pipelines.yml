@@ -192,9 +192,24 @@ stages:
         azurePowerShellVersion: 'LatestVersion'
         pwsh: true
 
-    # Step 4: Run Phase 2 Single File Transfer Test
+    # Step 4: Run PnP Diagnostics Test
+    - task: AzurePowerShell@5
+      displayName: 'Execute PnP Diagnostics Test'
+      inputs:
+        azureSubscription: 'sc-sharepoint-archiver-DATA-DEV-wif'
+        ScriptType: 'FilePath'
+        ScriptPath: 'scripts/Test-PnPDiagnostics.ps1'
+        ScriptArguments: >
+          -SharePointUrl "https://ascendispharmacom-my.sharepoint.com/personal/jua"
+          -KeyVaultName "${{ parameters.keyVaultName }}"
+        azurePowerShellVersion: 'LatestVersion'
+        pwsh: true
+        errorActionPreference: 'continue'
+
+    # Step 5: Run Phase 2 Single File Transfer Test (if diagnostics pass)
     - task: AzurePowerShell@5
       displayName: 'Execute Phase 2 Single File Transfer Test'
+      condition: succeededOrFailed()
       inputs:
         azureSubscription: 'sc-sharepoint-archiver-DATA-DEV-wif'
         ScriptType: 'FilePath'
