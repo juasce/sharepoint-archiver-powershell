@@ -110,6 +110,12 @@ function Get-SharePointUrlInfo {
                     $cleanPath = $decodedPath -split '&' | Select-Object -First 1
                     Write-Host "  Cleaned path: $cleanPath" -ForegroundColor Gray
                     
+                    # Remove "Documents" prefix since LibraryPath already includes it
+                    if ($cleanPath.StartsWith("Documents/")) {
+                        $cleanPath = $cleanPath.Substring(10) # Remove "Documents/"
+                        Write-Host "  Removed Documents prefix: $cleanPath" -ForegroundColor Gray
+                    }
+                    
                     # Check if it's a file (has extension) or folder
                     if ($cleanPath -match '\.[a-zA-Z0-9]+$') {
                         Write-Host "  Detected specific file URL" -ForegroundColor Gray
