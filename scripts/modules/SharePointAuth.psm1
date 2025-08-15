@@ -729,10 +729,128 @@ function Test-AzureStorageConnection {
     }
 }
 
-function Get-SharePointFiles {
+function Get-GraphAccessToken {
     <#
     .SYNOPSIS
-    Enumerates files from SharePoint URL (single file, folder, or library)
+    Gets Microsoft Graph access token using existing Azure context
+    
+    .OUTPUTS
+    String containing the Graph API access token
+    #>
+    [CmdletBinding()]
+    param()
+    
+    try {
+        Write-Host "Getting Microsoft Graph access token..." -ForegroundColor Yellow
+        
+        # Get token for Microsoft Graph
+        $tokenRequest = Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com/"
+        
+        if (-not $tokenRequest -or -not $tokenRequest.Token) {
+            throw "Failed to obtain Graph access token"
+        }
+        
+        Write-Host "✓ Successfully obtained Graph access token" -ForegroundColor Green
+        return $tokenRequest.Token
+    }
+    catch {
+        Write-Error "Failed to get Graph access token: $($_.Exception.Message)"
+        throw
+    }
+}
+
+function Get-SharePointSiteId {
+    <#
+    .SYNOPSIS
+    Gets SharePoint site ID using Graph API
+    
+    .PARAMETER SharePointUrl
+    SharePoint site URL
+    
+    .PARAMETER AccessToken
+    Graph API access token
+    
+    .OUTPUTS
+    String containing the SharePoint site ID
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SharePointUrl,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$AccessToken
+    )
+    
+    try {
+        Write-Host "Getting SharePoint site ID from Graph API..." -ForegroundColor Yellow
+        
+        # Parse the SharePoint URL to get site info
+        $urlInfo = Get-SharePointUrlInfo -SharePointUrl $SharePointUrl
+        
+        $headers = @{
+            'Authorization' = "Bearer $AccessToken"
+            'Content-Type' = 'application/json'
+        }
+        
+        if ($urlInfo.SiteType -eq "OneDrive") {
+            # For OneDrive, we need to get the user's drive
+            Write-Host "Detected OneDrive site - getting user drive..." -ForegroundColor Gray
+            
+            # Extract user principal name from the personal site URL
+            if ($urlInfo.SitePath -match "/personal/([^/]+)") {
+                $userPrincipalName = $matches[1] -replace '_', '@'
+                $userPrincipalName = $userPrincipalName -replace '_', '.'
+                Write-Host "User principal name: $userPrincipalName" -ForegroundColor Gray
+                
+                # Get user's drive
+                $userDriveUrl = "https://graph.microsoft.com/v1.0/users/$userPrincipalName/drive"
+                Write-Host "Calling: $userDriveUrl" -ForegroundColor Gray
+                
+                $driveResponse = Invoke-RestMethod -Uri $userDriveUrl -Headers $headers -Method Get
+                
+                return @{
+                    SiteId = $driveResponse.id
+                    DriveId = $driveResponse.id
+                    SiteType = "OneDrive"
+                    WebUrl = $driveResponse.webUrl
+                }
+            } else {
+                throw "Could not extract user principal name from OneDrive URL"
+            }
+        } else {
+            # For Team Sites, get site by URL
+            $hostname = ([System.Uri]$urlInfo.TenantUrl).Host
+            $sitePath = $urlInfo.SitePath
+            
+            $siteUrl = "https://graph.microsoft.com/v1.0/sites/$hostname`:$sitePath"
+            Write-Host "Calling: $siteUrl" -ForegroundColor Gray
+            
+            $siteResponse = Invoke-RestMethod -Uri $siteUrl -Headers $headers -Method Get
+            
+            # Get the default drive (Documents library)
+            $driveUrl = "https://graph.microsoft.com/v1.0/sites/$($siteResponse.id)/drive"
+            $driveResponse = Invoke-RestMethod -Uri $driveUrl -Headers $headers -Method Get
+            
+            return @{
+                SiteId = $siteResponse.id
+                DriveId = $driveResponse.id
+                SiteType = "TeamSite"
+                WebUrl = $siteResponse.webUrl
+            }
+        }
+    }
+    catch {
+        Write-Error "Failed to get SharePoint site ID: $($_.Exception.Message)"
+        Write-Error "Response: $($_.ErrorDetails.Message)"
+        throw
+    }
+}
+
+function Get-SharePointFilesViaGraph {
+    <#
+    .SYNOPSIS
+    Enumerates files from SharePoint using Microsoft Graph API
     
     .PARAMETER SharePointUrl
     SharePoint URL to enumerate files from
@@ -753,7 +871,164 @@ function Get-SharePointFiles {
     )
     
     try {
+        Write-Host "Enumerating files using Microsoft Graph API..." -ForegroundColor Yellow
+        Write-Host "SharePoint URL: $SharePointUrl" -ForegroundColor Gray
+        
+        # Get Graph access token
+        $accessToken = Get-GraphAccessToken
+        
+        # Get site information
+        $siteInfo = Get-SharePointSiteId -SharePointUrl $SharePointUrl -AccessToken $accessToken
+        Write-Host "✓ Site ID: $($siteInfo.SiteId)" -ForegroundColor Green
+        Write-Host "✓ Drive ID: $($siteInfo.DriveId)" -ForegroundColor Green
+        
+        $headers = @{
+            'Authorization' = "Bearer $accessToken"
+            'Content-Type' = 'application/json'
+        }
+        
+        $files = @()
+        
+        # Parse URL to determine target folder
+        $urlInfo = Get-SharePointUrlInfo -SharePointUrl $SharePointUrl
+        
+        $targetPath = ""
+        if ($urlInfo.FolderPath) {
+            $targetPath = "/$($urlInfo.FolderPath)"
+            Write-Host "Target folder: $targetPath" -ForegroundColor Gray
+        } else {
+            Write-Host "Target: Root of Documents library" -ForegroundColor Gray
+        }
+        
+        # Build Graph API URL for files
+        if ($siteInfo.SiteType -eq "OneDrive") {
+            if ($targetPath) {
+                # Get specific folder contents
+                $folderUrl = "https://graph.microsoft.com/v1.0/me/drive/root:$targetPath:/children"
+            } else {
+                # Get root contents
+                $folderUrl = "https://graph.microsoft.com/v1.0/me/drive/root/children"
+            }
+        } else {
+            if ($targetPath) {
+                # Get specific folder contents
+                $folderUrl = "https://graph.microsoft.com/v1.0/sites/$($siteInfo.SiteId)/drive/root:$targetPath:/children"
+            } else {
+                # Get root contents
+                $folderUrl = "https://graph.microsoft.com/v1.0/sites/$($siteInfo.SiteId)/drive/root/children"
+            }
+        }
+        
+        Write-Host "Graph API URL: $folderUrl" -ForegroundColor Gray
+        
+        # Get files from Graph API with retry logic
+        $retryCount = 0
+        $maxRetries = 3
+        $response = $null
+        
+        while ($retryCount -lt $maxRetries -and $null -eq $response) {
+            $retryCount++
+            try {
+                Write-Host "Attempt $retryCount of $maxRetries to call Graph API..." -ForegroundColor Gray
+                $response = Invoke-RestMethod -Uri $folderUrl -Headers $headers -Method Get
+                break
+            }
+            catch {
+                Write-Warning "Attempt $retryCount failed: $($_.Exception.Message)"
+                if ($retryCount -lt $maxRetries) {
+                    Start-Sleep -Seconds 5
+                }
+            }
+        }
+        
+        if ($null -eq $response) {
+            throw "Failed to get files from Graph API after $maxRetries attempts"
+        }
+        
+        Write-Host "✓ Graph API call successful - Retrieved $($response.value.Count) items" -ForegroundColor Green
+        
+        # Process the response
+        foreach ($item in $response.value) {
+            if ($item.file) {  # This is a file (not a folder)
+                $files += @{
+                    Name = $item.name
+                    ServerRelativeUrl = $item.parentReference.path + "/" + $item.name
+                    Size = $item.size
+                    TimeLastModified = $item.lastModifiedDateTime
+                    TimeCreated = $item.createdDateTime
+                    Author = if ($item.createdBy.user) { $item.createdBy.user.displayName } else { "Unknown" }
+                    SourcePath = $item.webUrl
+                    IsFolder = $false
+                    GraphId = $item.id
+                    DownloadUrl = $item.'@microsoft.graph.downloadUrl'
+                }
+                Write-Host "  Added file: $($item.name) ($([math]::Round($item.size / 1MB, 2)) MB)" -ForegroundColor Gray
+            }
+        }
+        
+        Write-Host "✓ Found $($files.Count) files via Graph API" -ForegroundColor Green
+        
+        if ($files.Count -gt 0) {
+            $totalSize = ($files | Measure-Object -Property Size -Sum).Sum
+            $totalSizeMB = [math]::Round($totalSize / 1MB, 2)
+            Write-Host "Total size: $totalSizeMB MB" -ForegroundColor Gray
+        }
+        
+        return $files
+    }
+    catch {
+        Write-Error "Failed to enumerate files via Graph API: $($_.Exception.Message)"
+        throw
+    }
+}
+
+function Get-SharePointFiles {
+    <#
+    .SYNOPSIS
+    Enumerates files from SharePoint URL using Graph API (primary) or PnP (fallback)
+    
+    .PARAMETER SharePointUrl
+    SharePoint URL to enumerate files from
+    
+    .PARAMETER Recursive
+    Whether to recursively enumerate folders
+    
+    .PARAMETER UseGraphAPI
+    Force use of Graph API instead of PnP PowerShell
+    
+    .OUTPUTS
+    Array of file objects with metadata
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SharePointUrl,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$Recursive = $false,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$UseGraphAPI = $true
+    )
+    
+    try {
         Write-Host "Enumerating files from SharePoint URL: $SharePointUrl" -ForegroundColor Yellow
+        
+        if ($UseGraphAPI) {
+            Write-Host "Using Microsoft Graph API for file enumeration..." -ForegroundColor Cyan
+            try {
+                $files = Get-SharePointFilesViaGraph -SharePointUrl $SharePointUrl -Recursive:$Recursive
+                Write-Host "✓ Graph API enumeration successful" -ForegroundColor Green
+                return $files
+            }
+            catch {
+                Write-Warning "Graph API enumeration failed: $($_.Exception.Message)"
+                Write-Host "Falling back to PnP PowerShell..." -ForegroundColor Yellow
+            }
+        }
+        
+        # Fallback to PnP PowerShell method
+        Write-Host "Using PnP PowerShell for file enumeration..." -ForegroundColor Cyan
         
         # Test connection before enumeration
         Write-Host "Testing PnP connection before file enumeration..." -ForegroundColor Gray
@@ -1509,6 +1784,9 @@ Export-ModuleMember -Function @(
     'Get-AzureStorageContext',
     'Test-SharePointConnection',
     'Test-AzureStorageConnection',
+    'Get-GraphAccessToken',
+    'Get-SharePointSiteId',
+    'Get-SharePointFilesViaGraph',
     'Get-SharePointFiles',
     'Convert-SharePointPathToBlobPath',
     'Start-AzCopyTransfer',
