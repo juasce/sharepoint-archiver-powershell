@@ -700,6 +700,635 @@ function Test-AzureStorageConnection {
     }
 }
 
+function Get-SharePointFiles {
+    <#
+    .SYNOPSIS
+    Enumerates files from SharePoint URL (single file, folder, or library)
+    
+    .PARAMETER SharePointUrl
+    SharePoint URL to enumerate files from
+    
+    .PARAMETER Recursive
+    Whether to recursively enumerate folders
+    
+    .OUTPUTS
+    Array of file objects with metadata
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SharePointUrl,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$Recursive = $false
+    )
+    
+    try {
+        Write-Host "Enumerating files from SharePoint URL: $SharePointUrl" -ForegroundColor Yellow
+        
+        # Parse the SharePoint URL to understand what we're dealing with
+        $urlInfo = Get-SharePointUrlInfo -SharePointUrl $SharePointUrl
+        
+        $files = @()
+        
+        # Determine enumeration strategy based on URL type
+        if ($urlInfo.FolderPath) {
+            # Specific folder - enumerate folder contents
+            $folderPath = $urlInfo.LibraryPath + "/" + $urlInfo.FolderPath
+            Write-Host "Enumerating folder: $folderPath" -ForegroundColor Gray
+            
+            if ($Recursive) {
+                $items = Get-PnPFolderItem -FolderSiteRelativeUrl $folderPath -ItemType All -Recursive
+            } else {
+                $items = Get-PnPFolderItem -FolderSiteRelativeUrl $folderPath -ItemType File
+            }
+            
+            foreach ($item in $items) {
+                if ($item.TypedObject.ToString() -eq "Microsoft.SharePoint.Client.File") {
+                    $files += @{
+                        Name = $item.Name
+                        ServerRelativeUrl = $item.ServerRelativeUrl
+                        Size = $item.Length
+                        TimeLastModified = $item.TimeLastModified
+                        TimeCreated = $item.TimeCreated
+                        Author = $item.Author.LookupValue
+                        SourcePath = $folderPath + "/" + $item.Name
+                        IsFolder = $false
+                    }
+                }
+            }
+        }
+        elseif ($urlInfo.LibraryPath) {
+            # Document library root - enumerate library contents
+            Write-Host "Enumerating library: $($urlInfo.LibraryPath)" -ForegroundColor Gray
+            
+            # Remove leading slash for PnP commands
+            $libraryName = $urlInfo.LibraryPath.TrimStart('/')
+            
+            if ($Recursive) {
+                $items = Get-PnPListItem -List $libraryName -PageSize 1000
+                foreach ($item in $items) {
+                    if ($item.FileSystemObjectType -eq "File") {
+                        $file = Get-PnPFile -Url $item["FileRef"] -AsListItem
+                        $files += @{
+                            Name = $file["FileLeafRef"]
+                            ServerRelativeUrl = $item["FileRef"]
+                            Size = $file["File_x0020_Size"]
+                            TimeLastModified = $item["Modified"]
+                            TimeCreated = $item["Created"]
+                            Author = $item["Author"].LookupValue
+                            SourcePath = $item["FileRef"]
+                            IsFolder = $false
+                        }
+                    }
+                }
+            } else {
+                # Just root level files
+                $items = Get-PnPFolderItem -FolderSiteRelativeUrl $urlInfo.LibraryPath -ItemType File
+                foreach ($item in $items) {
+                    $files += @{
+                        Name = $item.Name
+                        ServerRelativeUrl = $item.ServerRelativeUrl
+                        Size = $item.Length
+                        TimeLastModified = $item.TimeLastModified
+                        TimeCreated = $item.TimeCreated
+                        Author = $item.Author.LookupValue
+                        SourcePath = $urlInfo.LibraryPath + "/" + $item.Name
+                        IsFolder = $false
+                    }
+                }
+            }
+        }
+        else {
+            # Might be a direct file URL - try to get single file
+            Write-Host "Attempting to get single file from URL" -ForegroundColor Gray
+            
+            try {
+                # Extract file path from URL
+                $uri = [System.Uri]$SharePointUrl
+                $filePath = $uri.AbsolutePath
+                
+                $file = Get-PnPFile -Url $filePath -AsListItem
+                if ($file) {
+                    $files += @{
+                        Name = $file["FileLeafRef"]
+                        ServerRelativeUrl = $filePath
+                        Size = $file["File_x0020_Size"]
+                        TimeLastModified = $file["Modified"]
+                        TimeCreated = $file["Created"]
+                        Author = $file["Author"].LookupValue
+                        SourcePath = $filePath
+                        IsFolder = $false
+                    }
+                }
+            }
+            catch {
+                Write-Warning "Could not retrieve single file: $($_.Exception.Message)"
+                throw "Unable to enumerate files from URL: $SharePointUrl"
+            }
+        }
+        
+        Write-Host "Found $($files.Count) files" -ForegroundColor Green
+        
+        # Display summary
+        if ($files.Count -gt 0) {
+            $totalSize = ($files | Measure-Object -Property Size -Sum).Sum
+            $totalSizeMB = [math]::Round($totalSize / 1MB, 2)
+            Write-Host "Total size: $totalSizeMB MB" -ForegroundColor Gray
+            
+            # Show first few files for verification
+            Write-Host "Sample files:" -ForegroundColor Gray
+            foreach ($file in $files | Select-Object -First 3) {
+                $fileSizeMB = [math]::Round($file.Size / 1MB, 2)
+                Write-Host "  - $($file.Name) ($fileSizeMB MB)" -ForegroundColor Gray
+            }
+            
+            if ($files.Count -gt 3) {
+                Write-Host "  ... and $($files.Count - 3) more files" -ForegroundColor Gray
+            }
+        }
+        
+        return $files
+    }
+    catch {
+        Write-Error "Failed to enumerate SharePoint files: $($_.Exception.Message)"
+        throw
+    }
+}
+
+function Convert-SharePointPathToBlobPath {
+    <#
+    .SYNOPSIS
+    Converts SharePoint file paths to Azure blob storage paths
+    
+    .PARAMETER SharePointFile
+    SharePoint file object with metadata
+    
+    .PARAMETER SharePointUrl
+    Original SharePoint URL for context
+    
+    .PARAMETER ContainerName
+    Target blob container name
+    
+    .OUTPUTS
+    String containing the target blob path
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$SharePointFile,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$SharePointUrl,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ContainerName
+    )
+    
+    try {
+        # Parse the original SharePoint URL for context
+        $urlInfo = Get-SharePointUrlInfo -SharePointUrl $SharePointUrl
+        
+        # Start with the server relative URL and clean it up
+        $serverRelativeUrl = $SharePointFile.ServerRelativeUrl
+        
+        # Remove the site path from the beginning to get relative path within the site
+        $relativePath = $serverRelativeUrl
+        if ($urlInfo.SitePath -and $relativePath.StartsWith($urlInfo.SitePath)) {
+            $relativePath = $relativePath.Substring($urlInfo.SitePath.Length)
+        }
+        
+        # Remove leading slashes
+        $relativePath = $relativePath.TrimStart('/')
+        
+        # Replace backslashes with forward slashes for blob storage
+        $relativePath = $relativePath.Replace('\', '/')
+        
+        # Create a clean folder structure that preserves SharePoint hierarchy
+        $blobPath = ""
+        
+        # Add site type prefix for organization
+        switch ($urlInfo.SiteType) {
+            "OneDrive" {
+                # For OneDrive, use a "OneDrive" prefix and user identifier
+                $userPart = if ($urlInfo.SitePath -match "/personal/([^/]+)") { $matches[1] } else { "unknown-user" }
+                $blobPath = "OneDrive/$userPart/$relativePath"
+            }
+            "TeamSite" {
+                # For Team Sites, use site name from the site path
+                $siteName = if ($urlInfo.SitePath -match "/sites/([^/]+)") { $matches[1] } else { "unknown-site" }
+                $blobPath = "TeamSites/$siteName/$relativePath"
+            }
+            "RootSite" {
+                # For root sites, use "RootSite" prefix
+                $blobPath = "RootSite/$relativePath"
+            }
+            default {
+                # Fallback - use generic structure
+                $blobPath = "SharePoint/$relativePath"
+            }
+        }
+        
+        # Clean up any double slashes
+        $blobPath = $blobPath -replace '/+', '/'
+        
+        # Remove any leading slash
+        $blobPath = $blobPath.TrimStart('/')
+        
+        # Ensure we have a valid file name at the end
+        if (-not $blobPath.EndsWith($SharePointFile.Name)) {
+            Write-Warning "Blob path doesn't end with expected filename. Path: $blobPath, Expected: $($SharePointFile.Name)"
+        }
+        
+        # Add timestamp suffix for uniqueness if desired (optional)
+        # $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        # $blobPath = $blobPath -replace "(\.[^.]+)$", "-$timestamp`$1"
+        
+        Write-Host "SharePoint path: $serverRelativeUrl" -ForegroundColor Gray
+        Write-Host "Blob path: $blobPath" -ForegroundColor Gray
+        
+        return $blobPath
+    }
+    catch {
+        Write-Error "Failed to convert SharePoint path to blob path: $($_.Exception.Message)"
+        throw
+    }
+}
+
+function Start-AzCopyTransfer {
+    <#
+    .SYNOPSIS
+    Transfers a single file from SharePoint to Azure blob storage using AzCopy
+    
+    .PARAMETER SharePointFile
+    SharePoint file object with metadata
+    
+    .PARAMETER SharePointUrl
+    Original SharePoint URL for authentication context
+    
+    .PARAMETER StorageAccountName
+    Target storage account name
+    
+    .PARAMETER ContainerName
+    Target container name
+    
+    .PARAMETER BlobPath
+    Target blob path in the container
+    
+    .PARAMETER MaxConcurrency
+    Maximum number of concurrent transfers
+    
+    .OUTPUTS
+    Hashtable with transfer results and metrics
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$SharePointFile,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$SharePointUrl,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$StorageAccountName,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ContainerName,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$BlobPath,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$MaxConcurrency = 10
+    )
+    
+    try {
+        Write-Host "Starting AzCopy transfer for file: $($SharePointFile.Name)" -ForegroundColor Yellow
+        
+        # Get current PnP connection for SharePoint access
+        $connection = Get-PnPConnection -ErrorAction SilentlyContinue
+        if (-not $connection) {
+            throw "No active SharePoint connection found"
+        }
+        
+        # Get Azure context for storage authentication
+        $azContext = Get-AzContext
+        if (-not $azContext) {
+            throw "No active Azure context found"
+        }
+        
+        # Construct source and destination URLs
+        $sourceUrl = $connection.Url + $SharePointFile.ServerRelativeUrl
+        $destUrl = "https://$StorageAccountName.blob.core.windows.net/$ContainerName/$BlobPath"
+        
+        Write-Host "Source: $sourceUrl" -ForegroundColor Gray
+        Write-Host "Destination: $destUrl" -ForegroundColor Gray
+        
+        # Prepare AzCopy command
+        $azCopyPath = "azcopy"  # Assumes AzCopy is in PATH
+        
+        # Build AzCopy arguments
+        $azCopyArgs = @(
+            "copy",
+            "`"$sourceUrl`"",
+            "`"$destUrl`"",
+            "--overwrite=true",
+            "--cap-mbps=0",  # No bandwidth limit
+            "--blob-type=BlockBlob",
+            "--block-size-mb=100",  # 100MB blocks for large files
+            "--put-md5",
+            "--preserve-last-modified-time=true",
+            "--recursive=false",  # Single file transfer
+            "--log-level=INFO"
+        )
+        
+        # Add OAuth authentication for SharePoint source
+        $azCopyArgs += "--s2s-preserve-access-tier=false"
+        $azCopyArgs += "--s2s-detect-source-changed=true"
+        
+        # Set concurrency if specified
+        if ($MaxConcurrency -gt 0) {
+            $azCopyArgs += "--parallel-type=Auto"
+            $azCopyArgs += "--cap-mbps=0"
+        }
+        
+        # Create transfer result object
+        $transferResult = @{
+            Success = $false
+            SourceUrl = $sourceUrl
+            DestinationUrl = $destUrl
+            FileName = $SharePointFile.Name
+            FileSize = $SharePointFile.Size
+            StartTime = Get-Date
+            EndTime = $null
+            Duration = $null
+            TransferRate = $null
+            Error = $null
+            AzCopyOutput = @()
+            ExitCode = $null
+        }
+        
+        Write-Host "Executing AzCopy transfer..." -ForegroundColor Gray
+        Write-Host "File size: $([math]::Round($SharePointFile.Size / 1MB, 2)) MB" -ForegroundColor Gray
+        
+        # Execute AzCopy with authentication
+        $startTime = Get-Date
+        
+        try {
+            # Set environment variables for authentication
+            $env:AZCOPY_AUTO_LOGIN_TYPE = "AZCLI"
+            
+            # Execute AzCopy
+            $azCopyCommand = "$azCopyPath $($azCopyArgs -join ' ')"
+            Write-Host "Command: $azCopyCommand" -ForegroundColor Gray
+            
+            $azCopyProcess = Start-Process -FilePath $azCopyPath -ArgumentList $azCopyArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput "azcopy_output.log" -RedirectStandardError "azcopy_error.log"
+            
+            $transferResult.ExitCode = $azCopyProcess.ExitCode
+            $transferResult.EndTime = Get-Date
+            $transferResult.Duration = $transferResult.EndTime - $transferResult.StartTime
+            
+            # Read output files
+            if (Test-Path "azcopy_output.log") {
+                $transferResult.AzCopyOutput += Get-Content "azcopy_output.log"
+                Remove-Item "azcopy_output.log" -Force -ErrorAction SilentlyContinue
+            }
+            
+            if (Test-Path "azcopy_error.log") {
+                $errorContent = Get-Content "azcopy_error.log"
+                if ($errorContent) {
+                    $transferResult.AzCopyOutput += "ERRORS: " + ($errorContent -join "`n")
+                }
+                Remove-Item "azcopy_error.log" -Force -ErrorAction SilentlyContinue
+            }
+            
+            # Check if transfer was successful
+            if ($azCopyProcess.ExitCode -eq 0) {
+                $transferResult.Success = $true
+                
+                # Calculate transfer rate
+                if ($transferResult.Duration.TotalSeconds -gt 0) {
+                    $transferResult.TransferRate = [math]::Round(($SharePointFile.Size / 1MB) / $transferResult.Duration.TotalSeconds, 2)
+                }
+                
+                Write-Host "✓ Transfer completed successfully" -ForegroundColor Green
+                Write-Host "Duration: $($transferResult.Duration.ToString('mm\:ss'))" -ForegroundColor Gray
+                if ($transferResult.TransferRate) {
+                    Write-Host "Transfer rate: $($transferResult.TransferRate) MB/s" -ForegroundColor Gray
+                }
+            } else {
+                $transferResult.Success = $false
+                $transferResult.Error = "AzCopy exited with code $($azCopyProcess.ExitCode)"
+                Write-Error "AzCopy transfer failed with exit code: $($azCopyProcess.ExitCode)"
+                
+                # Display error output
+                if ($transferResult.AzCopyOutput) {
+                    Write-Host "AzCopy output:" -ForegroundColor Red
+                    foreach ($line in $transferResult.AzCopyOutput) {
+                        Write-Host "  $line" -ForegroundColor Red
+                    }
+                }
+            }
+        }
+        catch {
+            $transferResult.Success = $false
+            $transferResult.Error = $_.Exception.Message
+            $transferResult.EndTime = Get-Date
+            $transferResult.Duration = $transferResult.EndTime - $transferResult.StartTime
+            throw
+        }
+        
+        return $transferResult
+    }
+    catch {
+        Write-Error "Failed to execute AzCopy transfer: $($_.Exception.Message)"
+        if ($transferResult) {
+            $transferResult.Success = $false
+            $transferResult.Error = $_.Exception.Message
+            return $transferResult
+        }
+        throw
+    }
+}
+
+function Start-SingleFileTransfer {
+    <#
+    .SYNOPSIS
+    Orchestrates complete single file transfer from SharePoint to Azure Storage
+    
+    .PARAMETER SharePointUrl
+    SharePoint URL to transfer files from
+    
+    .PARAMETER StorageAccountName
+    Target storage account name
+    
+    .PARAMETER ContainerName
+    Target container name
+    
+    .PARAMETER MaxConcurrency
+    Maximum number of concurrent transfers
+    
+    .PARAMETER Recursive
+    Whether to recursively process folders
+    
+    .OUTPUTS
+    Hashtable with transfer summary and results
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SharePointUrl,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$StorageAccountName,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ContainerName,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$MaxConcurrency = 10,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$Recursive = $false
+    )
+    
+    try {
+        Write-Host "Starting single file transfer orchestration" -ForegroundColor Cyan
+        Write-Host "SharePoint URL: $SharePointUrl" -ForegroundColor Gray
+        Write-Host "Storage Account: $StorageAccountName" -ForegroundColor Gray
+        Write-Host "Container: $ContainerName" -ForegroundColor Gray
+        Write-Host "Recursive: $Recursive" -ForegroundColor Gray
+        
+        # Initialize result object
+        $result = @{
+            Success = $false
+            SharePointUrl = $SharePointUrl
+            StorageAccountName = $StorageAccountName
+            ContainerName = $ContainerName
+            FilesFound = 0
+            FilesTransferred = 0
+            FilesFailed = 0
+            TotalSizeBytes = 0
+            TransferStartTime = Get-Date
+            TransferEndTime = $null
+            TransferDuration = $null
+            TransferResults = @()
+            Errors = @()
+        }
+        
+        # Step 1: Enumerate SharePoint files
+        Write-Host "`n--- Step 1: Enumerating SharePoint Files ---" -ForegroundColor Cyan
+        $files = Get-SharePointFiles -SharePointUrl $SharePointUrl -Recursive:$Recursive
+        
+        $result.FilesFound = $files.Count
+        $result.TotalSizeBytes = ($files | Measure-Object -Property Size -Sum).Sum
+        
+        if ($files.Count -eq 0) {
+            Write-Warning "No files found to transfer"
+            $result.Success = $true  # No error, just no files
+            return $result
+        }
+        
+        Write-Host "Found $($files.Count) files to transfer" -ForegroundColor Green
+        Write-Host "Total size: $([math]::Round($result.TotalSizeBytes / 1MB, 2)) MB" -ForegroundColor Gray
+        
+        # Step 2: Ensure container exists (optional - create if needed)
+        Write-Host "`n--- Step 2: Checking Container ---" -ForegroundColor Cyan
+        try {
+            $storageContext = Get-AzureStorageContext -StorageAccountName $StorageAccountName
+            
+            # Check if container exists, create if not
+            $container = Get-AzStorageContainer -Name $ContainerName -Context $storageContext -ErrorAction SilentlyContinue
+            if (-not $container) {
+                Write-Host "Container '$ContainerName' does not exist, creating..." -ForegroundColor Yellow
+                $container = New-AzStorageContainer -Name $ContainerName -Context $storageContext -Permission Off
+                Write-Host "✓ Container created successfully" -ForegroundColor Green
+            } else {
+                Write-Host "✓ Container '$ContainerName' exists" -ForegroundColor Green
+            }
+        }
+        catch {
+            Write-Warning "Could not verify/create container (continuing anyway): $($_.Exception.Message)"
+        }
+        
+        # Step 3: Process files
+        Write-Host "`n--- Step 3: Transferring Files ---" -ForegroundColor Cyan
+        
+        $fileIndex = 0
+        foreach ($file in $files) {
+            $fileIndex++
+            
+            try {
+                Write-Host "`nProcessing file $fileIndex of $($files.Count): $($file.Name)" -ForegroundColor Yellow
+                
+                # Generate blob path
+                $blobPath = Convert-SharePointPathToBlobPath -SharePointFile $file -SharePointUrl $SharePointUrl -ContainerName $ContainerName
+                
+                # Transfer file
+                $transferResult = Start-AzCopyTransfer -SharePointFile $file -SharePointUrl $SharePointUrl -StorageAccountName $StorageAccountName -ContainerName $ContainerName -BlobPath $blobPath -MaxConcurrency $MaxConcurrency
+                
+                # Record result
+                $result.TransferResults += $transferResult
+                
+                if ($transferResult.Success) {
+                    $result.FilesTransferred++
+                    Write-Host "✓ File transferred successfully: $($file.Name)" -ForegroundColor Green
+                } else {
+                    $result.FilesFailed++
+                    $result.Errors += "Failed to transfer $($file.Name): $($transferResult.Error)"
+                    Write-Host "✗ File transfer failed: $($file.Name)" -ForegroundColor Red
+                }
+            }
+            catch {
+                $result.FilesFailed++
+                $errorMessage = "Error processing file $($file.Name): $($_.Exception.Message)"
+                $result.Errors += $errorMessage
+                Write-Error $errorMessage
+            }
+        }
+        
+        # Step 4: Finalize results
+        $result.TransferEndTime = Get-Date
+        $result.TransferDuration = $result.TransferEndTime - $result.TransferStartTime
+        $result.Success = ($result.FilesFailed -eq 0)
+        
+        # Display summary
+        Write-Host "`n--- Transfer Summary ---" -ForegroundColor Cyan
+        Write-Host "Files found: $($result.FilesFound)" -ForegroundColor Gray
+        Write-Host "Files transferred: $($result.FilesTransferred)" -ForegroundColor $(if ($result.FilesTransferred -gt 0) { "Green" } else { "Gray" })
+        Write-Host "Files failed: $($result.FilesFailed)" -ForegroundColor $(if ($result.FilesFailed -gt 0) { "Red" } else { "Gray" })
+        Write-Host "Total duration: $($result.TransferDuration.ToString('mm\:ss'))" -ForegroundColor Gray
+        Write-Host "Overall success: $($result.Success)" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
+        
+        # Show successful transfers
+        $successfulTransfers = $result.TransferResults | Where-Object { $_.Success }
+        if ($successfulTransfers.Count -gt 0) {
+            $totalTransferRate = ($successfulTransfers | Measure-Object -Property TransferRate -Average).Average
+            if ($totalTransferRate) {
+                Write-Host "Average transfer rate: $([math]::Round($totalTransferRate, 2)) MB/s" -ForegroundColor Gray
+            }
+        }
+        
+        # Display errors if any
+        if ($result.Errors.Count -gt 0) {
+            Write-Host "`nErrors encountered:" -ForegroundColor Red
+            foreach ($error in $result.Errors) {
+                Write-Host "  - $error" -ForegroundColor Red
+            }
+        }
+        
+        return $result
+    }
+    catch {
+        $result.TransferEndTime = Get-Date
+        $result.TransferDuration = $result.TransferEndTime - $result.TransferStartTime
+        $result.Success = $false
+        $result.Errors += $_.Exception.Message
+        Write-Error "Single file transfer orchestration failed: $($_.Exception.Message)"
+        return $result
+    }
+}
+
 function Initialize-Authentication {
     <#
     .SYNOPSIS
@@ -812,5 +1441,9 @@ Export-ModuleMember -Function @(
     'Get-AzureStorageContext',
     'Test-SharePointConnection',
     'Test-AzureStorageConnection',
+    'Get-SharePointFiles',
+    'Convert-SharePointPathToBlobPath',
+    'Start-AzCopyTransfer',
+    'Start-SingleFileTransfer',
     'Initialize-Authentication'
 )
