@@ -102,17 +102,23 @@ function Get-SharePointUrlInfo {
                 $urlInfo.LibraryPath = "/Documents"  # Default to Documents library
                 
                 # Check if URL points to a specific folder or file
-                if ($SharePointUrl -match 'Documents%2F(.+)') {
+                if ($SharePointUrl -match 'Documents%2F(.+?)(?:&|$)') {
                     $decodedPath = [System.Web.HttpUtility]::UrlDecode($matches[1])
+                    Write-Host "  Decoded path from URL: $decodedPath" -ForegroundColor Gray
+                    
+                    # Clean up the path - remove any trailing query parameters
+                    $cleanPath = $decodedPath -split '&' | Select-Object -First 1
+                    Write-Host "  Cleaned path: $cleanPath" -ForegroundColor Gray
+                    
                     # Check if it's a file (has extension) or folder
-                    if ($decodedPath -match '\.[a-zA-Z0-9]+$') {
+                    if ($cleanPath -match '\.[a-zA-Z0-9]+$') {
                         Write-Host "  Detected specific file URL" -ForegroundColor Gray
-                        $urlInfo.FolderPath = [System.IO.Path]::GetDirectoryName($decodedPath).Replace('\', '/')
+                        $urlInfo.FolderPath = [System.IO.Path]::GetDirectoryName($cleanPath).Replace('\', '/')
                         if ($urlInfo.FolderPath -eq '.') { $urlInfo.FolderPath = "" }
                     } else {
-                        $urlInfo.FolderPath = $decodedPath
+                        $urlInfo.FolderPath = $cleanPath
                     }
-                    Write-Host "  Extracted folder path: $($urlInfo.FolderPath)" -ForegroundColor Gray
+                    Write-Host "  Final folder path: $($urlInfo.FolderPath)" -ForegroundColor Gray
                 }
                 
                 $urlInfo.IsValid = $true
@@ -754,10 +760,35 @@ function Get-SharePointFiles {
             $folderPath = $urlInfo.LibraryPath + "/" + $urlInfo.FolderPath
             Write-Host "Enumerating folder: $folderPath" -ForegroundColor Gray
             
-            if ($Recursive) {
-                $items = Get-PnPFolderItem -FolderSiteRelativeUrl $folderPath -ItemType All -Recursive
-            } else {
-                $items = Get-PnPFolderItem -FolderSiteRelativeUrl $folderPath -ItemType File
+            # Apply SSL configuration before folder operations
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+            
+            $retryCount = 0
+            $maxRetries = 3
+            $items = $null
+            
+            while ($retryCount -lt $maxRetries -and $null -eq $items) {
+                $retryCount++
+                try {
+                    Write-Host "Attempt $retryCount of $maxRetries to enumerate folder..." -ForegroundColor Gray
+                    if ($Recursive) {
+                        $items = Get-PnPFolderItem -FolderSiteRelativeUrl $folderPath -ItemType All -Recursive
+                    } else {
+                        $items = Get-PnPFolderItem -FolderSiteRelativeUrl $folderPath -ItemType File
+                    }
+                    break
+                }
+                catch {
+                    Write-Warning "Attempt $retryCount failed: $($_.Exception.Message)"
+                    if ($retryCount -lt $maxRetries) {
+                        Start-Sleep -Seconds 5
+                    }
+                }
+            }
+            
+            if ($null -eq $items) {
+                throw "Failed to retrieve folder items after $maxRetries attempts"
             }
             
             foreach ($item in $items) {
