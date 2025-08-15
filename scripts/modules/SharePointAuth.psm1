@@ -100,6 +100,21 @@ function Get-SharePointUrlInfo {
                 $urlInfo.ConnectionUrl = $urlInfo.TenantUrl + "/personal/" + $userPart
                 $urlInfo.SitePath = "/personal/" + $userPart
                 $urlInfo.LibraryPath = "/Documents"  # Default to Documents library
+                
+                # Check if URL points to a specific folder or file
+                if ($SharePointUrl -match 'Documents%2F(.+)') {
+                    $decodedPath = [System.Web.HttpUtility]::UrlDecode($matches[1])
+                    # Check if it's a file (has extension) or folder
+                    if ($decodedPath -match '\.[a-zA-Z0-9]+$') {
+                        Write-Host "  Detected specific file URL" -ForegroundColor Gray
+                        $urlInfo.FolderPath = [System.IO.Path]::GetDirectoryName($decodedPath).Replace('\', '/')
+                        if ($urlInfo.FolderPath -eq '.') { $urlInfo.FolderPath = "" }
+                    } else {
+                        $urlInfo.FolderPath = $decodedPath
+                    }
+                    Write-Host "  Extracted folder path: $($urlInfo.FolderPath)" -ForegroundColor Gray
+                }
+                
                 $urlInfo.IsValid = $true
                 Write-Host "  Type: OneDrive (from query URL)" -ForegroundColor Cyan
             } else {
@@ -326,6 +341,8 @@ function Connect-SharePointOnline {
         [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }  # Accept all certificates for SharePoint
         [System.Net.ServicePointManager]::Expect100Continue = $false
         [System.Net.ServicePointManager]::DefaultConnectionLimit = 1000
+        [System.Net.ServicePointManager]::MaxServicePointIdleTime = 30000
+        [System.Net.ServicePointManager]::UseNagleAlgorithm = $false
         
         # Connect using certificate authentication with Base64 encoded certificate
         if ([string]::IsNullOrEmpty($CertificatePassword)) {
@@ -765,26 +782,80 @@ function Get-SharePointFiles {
             # Remove leading slash for PnP commands
             $libraryName = $urlInfo.LibraryPath.TrimStart('/')
             
+            # Apply SSL configuration before PnP operations
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+            
             if ($Recursive) {
-                $items = Get-PnPListItem -List $libraryName -PageSize 1000
+                Write-Host "Getting list items recursively with retry logic..." -ForegroundColor Gray
+                $retryCount = 0
+                $maxRetries = 3
+                $items = $null
+                
+                while ($retryCount -lt $maxRetries -and $null -eq $items) {
+                    $retryCount++
+                    try {
+                        Write-Host "Attempt $retryCount of $maxRetries..." -ForegroundColor Gray
+                        $items = Get-PnPListItem -List $libraryName -PageSize 500
+                        break
+                    }
+                    catch {
+                        Write-Warning "Attempt $retryCount failed: $($_.Exception.Message)"
+                        if ($retryCount -lt $maxRetries) {
+                            Start-Sleep -Seconds 5
+                        }
+                    }
+                }
+                
+                if ($null -eq $items) {
+                    throw "Failed to retrieve list items after $maxRetries attempts"
+                }
+                
                 foreach ($item in $items) {
                     if ($item.FileSystemObjectType -eq "File") {
-                        $file = Get-PnPFile -Url $item["FileRef"] -AsListItem
-                        $files += @{
-                            Name = $file["FileLeafRef"]
-                            ServerRelativeUrl = $item["FileRef"]
-                            Size = $file["File_x0020_Size"]
-                            TimeLastModified = $item["Modified"]
-                            TimeCreated = $item["Created"]
-                            Author = $item["Author"].LookupValue
-                            SourcePath = $item["FileRef"]
-                            IsFolder = $false
+                        try {
+                            $files += @{
+                                Name = $item["FileLeafRef"]
+                                ServerRelativeUrl = $item["FileRef"]
+                                Size = if ($item["File_x0020_Size"]) { $item["File_x0020_Size"] } else { 0 }
+                                TimeLastModified = $item["Modified"]
+                                TimeCreated = $item["Created"]
+                                Author = if ($item["Author"]) { $item["Author"].LookupValue } else { "Unknown" }
+                                SourcePath = $item["FileRef"]
+                                IsFolder = $false
+                            }
+                        }
+                        catch {
+                            Write-Warning "Error processing file item: $($_.Exception.Message)"
                         }
                     }
                 }
             } else {
-                # Just root level files
-                $items = Get-PnPFolderItem -FolderSiteRelativeUrl $urlInfo.LibraryPath -ItemType File
+                # Just root level files with retry logic
+                Write-Host "Getting folder items with retry logic..." -ForegroundColor Gray
+                $retryCount = 0
+                $maxRetries = 3
+                $items = $null
+                
+                while ($retryCount -lt $maxRetries -and $null -eq $items) {
+                    $retryCount++
+                    try {
+                        Write-Host "Attempt $retryCount of $maxRetries..." -ForegroundColor Gray
+                        $items = Get-PnPFolderItem -FolderSiteRelativeUrl $urlInfo.LibraryPath -ItemType File
+                        break
+                    }
+                    catch {
+                        Write-Warning "Attempt $retryCount failed: $($_.Exception.Message)"
+                        if ($retryCount -lt $maxRetries) {
+                            Start-Sleep -Seconds 5
+                        }
+                    }
+                }
+                
+                if ($null -eq $items) {
+                    throw "Failed to retrieve folder items after $maxRetries attempts"
+                }
+                
                 foreach ($item in $items) {
                     $files += @{
                         Name = $item.Name
@@ -792,7 +863,7 @@ function Get-SharePointFiles {
                         Size = $item.Length
                         TimeLastModified = $item.TimeLastModified
                         TimeCreated = $item.TimeCreated
-                        Author = $item.Author.LookupValue
+                        Author = if ($item.Author) { $item.Author.LookupValue } else { "Unknown" }
                         SourcePath = $urlInfo.LibraryPath + "/" + $item.Name
                         IsFolder = $false
                     }
