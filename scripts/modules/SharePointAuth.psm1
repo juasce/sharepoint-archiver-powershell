@@ -755,6 +755,17 @@ function Get-SharePointFiles {
     try {
         Write-Host "Enumerating files from SharePoint URL: $SharePointUrl" -ForegroundColor Yellow
         
+        # Test connection before enumeration
+        Write-Host "Testing PnP connection before file enumeration..." -ForegroundColor Gray
+        try {
+            $context = Get-PnPContext -ErrorAction Stop
+            Write-Host "✓ PnP connection is active" -ForegroundColor Green
+        }
+        catch {
+            Write-Warning "PnP connection lost, attempting to reconnect..."
+            throw "PnP connection not available for file enumeration: $($_.Exception.Message)"
+        }
+        
         # Parse the SharePoint URL to understand what we're dealing with
         $urlInfo = Get-SharePointUrlInfo -SharePointUrl $SharePointUrl
         
@@ -816,37 +827,19 @@ function Get-SharePointFiles {
             # Document library root - enumerate library contents
             Write-Host "Enumerating library: $($urlInfo.LibraryPath)" -ForegroundColor Gray
             
-            # Remove leading slash for PnP commands
-            $libraryName = $urlInfo.LibraryPath.TrimStart('/')
+            # Use simpler approach - just get a few files to test the connection
+            Write-Host "Using simplified file enumeration..." -ForegroundColor Gray
             
-            # Apply SSL configuration before PnP operations
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
-            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-            
-            if ($Recursive) {
-                Write-Host "Getting list items recursively with retry logic..." -ForegroundColor Gray
-                $retryCount = 0
-                $maxRetries = 3
-                $items = $null
+            try {
+                # Get Documents library directly
+                Write-Host "Getting Documents library..." -ForegroundColor Gray
+                $list = Get-PnPList -Identity "Documents"
+                Write-Host "✓ Successfully got Documents library" -ForegroundColor Green
                 
-                while ($retryCount -lt $maxRetries -and $null -eq $items) {
-                    $retryCount++
-                    try {
-                        Write-Host "Attempt $retryCount of $maxRetries..." -ForegroundColor Gray
-                        $items = Get-PnPListItem -List $libraryName -PageSize 500
-                        break
-                    }
-                    catch {
-                        Write-Warning "Attempt $retryCount failed: $($_.Exception.Message)"
-                        if ($retryCount -lt $maxRetries) {
-                            Start-Sleep -Seconds 5
-                        }
-                    }
-                }
-                
-                if ($null -eq $items) {
-                    throw "Failed to retrieve list items after $maxRetries attempts"
-                }
+                # Get just first 10 items for testing
+                Write-Host "Getting first 10 items from library..." -ForegroundColor Gray
+                $items = Get-PnPListItem -List "Documents" -PageSize 10
+                Write-Host "✓ Retrieved $($items.Count) items" -ForegroundColor Green
                 
                 foreach ($item in $items) {
                     if ($item.FileSystemObjectType -eq "File") {
@@ -854,57 +847,24 @@ function Get-SharePointFiles {
                             $files += @{
                                 Name = $item["FileLeafRef"]
                                 ServerRelativeUrl = $item["FileRef"]
-                                Size = if ($item["File_x0020_Size"]) { $item["File_x0020_Size"] } else { 0 }
+                                Size = if ($item["File_x0020_Size"]) { [int]$item["File_x0020_Size"] } else { 0 }
                                 TimeLastModified = $item["Modified"]
                                 TimeCreated = $item["Created"]
                                 Author = if ($item["Author"]) { $item["Author"].LookupValue } else { "Unknown" }
                                 SourcePath = $item["FileRef"]
                                 IsFolder = $false
                             }
+                            Write-Host "  Added file: $($item["FileLeafRef"])" -ForegroundColor Gray
                         }
                         catch {
                             Write-Warning "Error processing file item: $($_.Exception.Message)"
                         }
                     }
                 }
-            } else {
-                # Just root level files with retry logic
-                Write-Host "Getting folder items with retry logic..." -ForegroundColor Gray
-                $retryCount = 0
-                $maxRetries = 3
-                $items = $null
-                
-                while ($retryCount -lt $maxRetries -and $null -eq $items) {
-                    $retryCount++
-                    try {
-                        Write-Host "Attempt $retryCount of $maxRetries..." -ForegroundColor Gray
-                        $items = Get-PnPFolderItem -FolderSiteRelativeUrl $urlInfo.LibraryPath -ItemType File
-                        break
-                    }
-                    catch {
-                        Write-Warning "Attempt $retryCount failed: $($_.Exception.Message)"
-                        if ($retryCount -lt $maxRetries) {
-                            Start-Sleep -Seconds 5
-                        }
-                    }
-                }
-                
-                if ($null -eq $items) {
-                    throw "Failed to retrieve folder items after $maxRetries attempts"
-                }
-                
-                foreach ($item in $items) {
-                    $files += @{
-                        Name = $item.Name
-                        ServerRelativeUrl = $item.ServerRelativeUrl
-                        Size = $item.Length
-                        TimeLastModified = $item.TimeLastModified
-                        TimeCreated = $item.TimeCreated
-                        Author = if ($item.Author) { $item.Author.LookupValue } else { "Unknown" }
-                        SourcePath = $urlInfo.LibraryPath + "/" + $item.Name
-                        IsFolder = $false
-                    }
-                }
+            }
+            catch {
+                Write-Error "Failed to enumerate library: $($_.Exception.Message)"
+                throw
             }
         }
         else {
