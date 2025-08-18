@@ -61,8 +61,26 @@ try {
             exit 1
         }
         
+        Write-Host "Validating target container: $ContainerName..." -ForegroundColor Gray
+        try {
+            # Check if container exists
+            $container = Get-AzStorageContainer -Name $ContainerName -Context $storageContext -ErrorAction SilentlyContinue
+            if (-not $container) {
+                Write-Host "Container '$ContainerName' does not exist. Creating..." -ForegroundColor Yellow
+                $container = New-AzStorageContainer -Name $ContainerName -Context $storageContext -Permission Off
+                Write-Host "✓ Created container: $ContainerName" -ForegroundColor Green
+            } else {
+                Write-Host "✓ Container exists: $ContainerName" -ForegroundColor Green
+            }
+        }
+        catch {
+            Write-Error "Failed to validate/create container '$ContainerName': $($_.Exception.Message)"
+            exit 1
+        }
+        
         Write-Host "✓ Authentication successful (Graph API mode)" -ForegroundColor Green
         Write-Host "✓ Azure Storage accessible" -ForegroundColor Green
+        Write-Host "✓ Target container ready: $ContainerName" -ForegroundColor Green
     }
     catch {
         Write-Error "Authentication failed: $($_.Exception.Message)"
