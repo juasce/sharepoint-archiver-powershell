@@ -743,14 +743,49 @@ function Get-GraphAccessToken {
     try {
         Write-Host "Getting Microsoft Graph access token..." -ForegroundColor Yellow
         
-        # Get token for Microsoft Graph
-        $tokenRequest = Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com/"
+        # Get token for Microsoft Graph with specific scope
+        # Try different approaches to get a valid token
+        $tokenRequest = $null
+        
+        # Method 1: Try with standard Graph resource URL
+        try {
+            Write-Host "Attempting token acquisition method 1: Standard Graph resource..." -ForegroundColor Gray
+            $tokenRequest = Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com"
+        } catch {
+            Write-Warning "Method 1 failed: $($_.Exception.Message)"
+        }
+        
+        # Method 2: Try with /.default scope
+        if (-not $tokenRequest -or -not $tokenRequest.Token) {
+            try {
+                Write-Host "Attempting token acquisition method 2: With /.default scope..." -ForegroundColor Gray
+                $tokenRequest = Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com/.default"
+            } catch {
+                Write-Warning "Method 2 failed: $($_.Exception.Message)"
+            }
+        }
+        
+        # Method 3: Try with specific scopes
+        if (-not $tokenRequest -or -not $tokenRequest.Token) {
+            try {
+                Write-Host "Attempting token acquisition method 3: With specific scopes..." -ForegroundColor Gray
+                $tokenRequest = Get-AzAccessToken -Scope "https://graph.microsoft.com/Sites.Read.All", "https://graph.microsoft.com/Files.Read.All"
+            } catch {
+                Write-Warning "Method 3 failed: $($_.Exception.Message)"
+            }
+        }
         
         if (-not $tokenRequest -or -not $tokenRequest.Token) {
             throw "Failed to obtain Graph access token"
         }
         
+        # Validate token format (should start with "ey" for JWT)
+        if (-not $tokenRequest.Token.StartsWith("ey")) {
+            Write-Warning "Token doesn't appear to be in JWT format: $($tokenRequest.Token.Substring(0, [Math]::Min(20, $tokenRequest.Token.Length)))..."
+        }
+        
         Write-Host "✓ Successfully obtained Graph access token" -ForegroundColor Green
+        Write-Host "Token length: $($tokenRequest.Token.Length) characters" -ForegroundColor Gray
         return $tokenRequest.Token
     }
     catch {
@@ -793,6 +828,14 @@ function Get-SharePointSiteId {
             'Content-Type' = 'application/json'
         }
         
+        # Debug: show first/last few characters of token
+        $tokenPreview = if ($AccessToken.Length -gt 20) {
+            "$($AccessToken.Substring(0, 10))...$($AccessToken.Substring($AccessToken.Length - 10))"
+        } else {
+            $AccessToken
+        }
+        Write-Host "Using token: $tokenPreview" -ForegroundColor Gray
+        
         if ($urlInfo.SiteType -eq "OneDrive") {
             # For OneDrive, we need to get the user's drive
             Write-Host "Detected OneDrive site - getting user drive..." -ForegroundColor Gray
@@ -807,7 +850,23 @@ function Get-SharePointSiteId {
                 $userDriveUrl = "https://graph.microsoft.com/v1.0/users/$userPrincipalName/drive"
                 Write-Host "Calling: $userDriveUrl" -ForegroundColor Gray
                 
-                $driveResponse = Invoke-RestMethod -Uri $userDriveUrl -Headers $headers -Method Get
+                try {
+                    $driveResponse = Invoke-RestMethod -Uri $userDriveUrl -Headers $headers -Method Get
+                } catch {
+                    $errorDetails = ""
+                    if ($_.Exception.Response) {
+                        try {
+                            $responseStream = $_.Exception.Response.GetResponseStream()
+                            $reader = New-Object System.IO.StreamReader($responseStream)
+                            $errorDetails = $reader.ReadToEnd()
+                        } catch {
+                            $errorDetails = "Could not read error response"
+                        }
+                    }
+                    Write-Error "Failed to get SharePoint site ID: $($_.Exception.Message)"
+                    Write-Error "Response: $errorDetails"
+                    throw "Failed to get SharePoint site ID: $($_.Exception.Message)"
+                }
                 
                 return @{
                     SiteId = $driveResponse.id
