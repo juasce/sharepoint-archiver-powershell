@@ -1602,7 +1602,6 @@ function Start-AzCopyTransfer {
             "`"$sourceUrl`"",
             "`"$destUrl`"",
             "--overwrite=true",
-            "--cap-mbps=0",  # No bandwidth limit
             "--blob-type=BlockBlob",
             "--block-size-mb=100",  # 100MB blocks for large files
             "--put-md5",
@@ -1620,11 +1619,9 @@ function Start-AzCopyTransfer {
         $azCopyArgs += "--s2s-preserve-access-tier=false"
         $azCopyArgs += "--s2s-detect-source-changed=true"
         
-        # Set concurrency if specified
-        if ($MaxConcurrency -gt 0) {
-            $azCopyArgs += "--parallel-type=Auto"
-            $azCopyArgs += "--cap-mbps=0"
-        }
+        # Set concurrency and bandwidth (always apply)
+        $azCopyArgs += "--parallel-type=Auto"
+        $azCopyArgs += "--cap-mbps=0"  # No bandwidth limit
         
         # Create transfer result object
         $transferResult = @{
@@ -1695,12 +1692,17 @@ function Start-AzCopyTransfer {
                 $transferResult.Error = "AzCopy exited with code $($azCopyProcess.ExitCode)"
                 Write-Error "AzCopy transfer failed with exit code: $($azCopyProcess.ExitCode)"
                 
-                # Display error output
-                if ($transferResult.AzCopyOutput) {
+                # Display detailed error output
+                Write-Host "AzCopy command that failed:" -ForegroundColor Red
+                Write-Host "  $azCopyCommand" -ForegroundColor Red
+                
+                if ($transferResult.AzCopyOutput -and $transferResult.AzCopyOutput.Count -gt 0) {
                     Write-Host "AzCopy output:" -ForegroundColor Red
                     foreach ($line in $transferResult.AzCopyOutput) {
                         Write-Host "  $line" -ForegroundColor Red
                     }
+                } else {
+                    Write-Host "No AzCopy output captured" -ForegroundColor Yellow
                 }
             }
         }
