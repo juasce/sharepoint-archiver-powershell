@@ -1629,8 +1629,7 @@ function Start-AzCopyTransfer {
         $azCopyArgs += "--s2s-preserve-access-tier=false"
         $azCopyArgs += "--s2s-detect-source-changed=true"
         
-        # Set concurrency and bandwidth (always apply)
-        $azCopyArgs += "--parallel-type=Auto"
+        # Set bandwidth limit (no concurrency control - AzCopy handles this automatically)
         $azCopyArgs += "--cap-mbps=0"  # No bandwidth limit
         
         # Create transfer result object
