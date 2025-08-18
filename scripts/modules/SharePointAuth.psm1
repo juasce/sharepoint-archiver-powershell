@@ -743,6 +743,11 @@ function Get-GraphAccessToken {
     try {
         Write-Host "Getting Microsoft Graph access token..." -ForegroundColor Yellow
         
+        # Configure SSL/TLS settings for secure connections
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+        Write-Host "Added TLS 1.2 in session." -ForegroundColor Gray
+        
         # Get token for Microsoft Graph with specific scope
         # Try different approaches to get a valid token
         $tokenRequest = $null
@@ -779,14 +784,26 @@ function Get-GraphAccessToken {
             throw "Failed to obtain Graph access token"
         }
         
+        # Convert token to plain text if it's a SecureString
+        $token = $tokenRequest.Token
+        if ($token -is [System.Security.SecureString]) {
+            Write-Host "Converting SecureString token to plain text..." -ForegroundColor Gray
+            $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($token)
+            try {
+                $token = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+            } finally {
+                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+            }
+        }
+        
         # Validate token format (should start with "ey" for JWT)
-        if (-not $tokenRequest.Token.StartsWith("ey")) {
-            Write-Warning "Token doesn't appear to be in JWT format: $($tokenRequest.Token.Substring(0, [Math]::Min(20, $tokenRequest.Token.Length)))..."
+        if (-not $token.StartsWith("ey")) {
+            Write-Warning "Token doesn't appear to be in JWT format: $($token.Substring(0, [Math]::Min(20, $token.Length)))..."
         }
         
         Write-Host "✓ Successfully obtained Graph access token" -ForegroundColor Green
-        Write-Host "Token length: $($tokenRequest.Token.Length) characters" -ForegroundColor Gray
-        return $tokenRequest.Token
+        Write-Host "Token length: $($token.Length) characters" -ForegroundColor Gray
+        return $token
     }
     catch {
         Write-Error "Failed to get Graph access token: $($_.Exception.Message)"
@@ -819,6 +836,10 @@ function Get-SharePointSiteId {
     
     try {
         Write-Host "Getting SharePoint site ID from Graph API..." -ForegroundColor Yellow
+        
+        # Configure SSL/TLS settings for secure connections
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
         
         # Parse the SharePoint URL to get site info
         $urlInfo = Get-SharePointUrlInfo -SharePointUrl $SharePointUrl
@@ -932,6 +953,10 @@ function Get-SharePointFilesViaGraph {
     try {
         Write-Host "Enumerating files using Microsoft Graph API..." -ForegroundColor Yellow
         Write-Host "SharePoint URL: $SharePointUrl" -ForegroundColor Gray
+        
+        # Configure SSL/TLS settings for secure connections
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
         
         # Get Graph access token
         $accessToken = Get-GraphAccessToken
