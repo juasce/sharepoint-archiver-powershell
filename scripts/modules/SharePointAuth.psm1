@@ -863,11 +863,44 @@ function Get-SharePointSiteId {
             
             # Extract user principal name from the personal site URL
             if ($urlInfo.SitePath -match "/personal/([^/]+)") {
-                $userPrincipalName = $matches[1] -replace '_', '@'
-                $userPrincipalName = $userPrincipalName -replace '_', '.'
-                Write-Host "User principal name: $userPrincipalName" -ForegroundColor Gray
+                $extractedUser = $matches[1]
+                Write-Host "Extracted user segment: $extractedUser" -ForegroundColor Gray
                 
-                # Get user's drive
+                # Handle different OneDrive URL formats
+                if ($extractedUser -match '_') {
+                    # Format: jua_ascendispharma_com -> jua@ascendispharma.com
+                    $userPrincipalName = $extractedUser -replace '_', '@', 1  # Replace first underscore with @
+                    $userPrincipalName = $userPrincipalName -replace '_', '.'  # Replace remaining underscores with dots
+                    Write-Host "Converted underscore format: $extractedUser -> $userPrincipalName" -ForegroundColor Gray
+                } else {
+                    # Simple username - need to construct full UPN
+                    # Extract domain from hostname: ascendispharmacom-my.sharepoint.com -> ascendispharma.com
+                    $hostname = ([System.Uri]$urlInfo.TenantUrl).Host
+                    Write-Host "Hostname: $hostname" -ForegroundColor Gray
+                    
+                    if ($hostname -match "^([^-]+)-my\.sharepoint\.com$") {
+                        $tenantName = $matches[1]
+                        Write-Host "Tenant name: $tenantName" -ForegroundColor Gray
+                        
+                        # Convert tenant name to domain: ascendispharmacom -> ascendispharma.com
+                        if ($tenantName -match "^(.+)com$") {
+                            $baseName = $matches[1]
+                            $domain = "$baseName.com"
+                        } else {
+                            $domain = "$tenantName.com"
+                        }
+                        
+                        $userPrincipalName = "$extractedUser@$domain"
+                        Write-Host "Constructed from tenant: $userPrincipalName" -ForegroundColor Gray
+                    } else {
+                        # Fallback: try common patterns
+                        $userPrincipalName = "$extractedUser@ascendispharma.com"
+                        Write-Host "Using fallback domain: $userPrincipalName" -ForegroundColor Gray
+                    }
+                }
+                Write-Host "Constructed user principal name: $userPrincipalName" -ForegroundColor Gray
+                
+                # Get user's drive using constructed user principal name
                 $userDriveUrl = "https://graph.microsoft.com/v1.0/users/$userPrincipalName/drive"
                 Write-Host "Calling: $userDriveUrl" -ForegroundColor Gray
                 
@@ -884,8 +917,14 @@ function Get-SharePointSiteId {
                             $errorDetails = "Could not read error response"
                         }
                     }
+                    
                     Write-Error "Failed to get SharePoint site ID: $($_.Exception.Message)"
                     Write-Error "Response: $errorDetails"
+                    Write-Host ""
+                    Write-Host "TROUBLESHOOTING:" -ForegroundColor Yellow
+                    Write-Host "1. Check if PnPOnline app has 'Sites.Read.All' or 'Files.Read.All' permissions" -ForegroundColor Yellow
+                    Write-Host "2. Verify the user principal name is correct: $userPrincipalName" -ForegroundColor Yellow
+                    Write-Host "3. Consider using a Team Site URL instead of OneDrive personal site" -ForegroundColor Yellow
                     throw "Failed to get SharePoint site ID: $($_.Exception.Message)"
                 }
                 
