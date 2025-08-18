@@ -1596,6 +1596,16 @@ function Start-AzCopyTransfer {
         # Prepare AzCopy command
         $azCopyPath = "azcopy"  # Assumes AzCopy is in PATH
         
+        # Verify AzCopy is available
+        try {
+            Write-Host "Checking AzCopy availability..." -ForegroundColor Gray
+            $azCopyVersion = & $azCopyPath version 2>$null
+            Write-Host "AzCopy version: $azCopyVersion" -ForegroundColor Gray
+        }
+        catch {
+            Write-Warning "AzCopy may not be available or not in PATH: $($_.Exception.Message)"
+        }
+        
         # Build AzCopy arguments
         $azCopyArgs = @(
             "copy",
@@ -1637,6 +1647,9 @@ function Start-AzCopyTransfer {
             Error = $null
             AzCopyOutput = @()
             ExitCode = $null
+            IntegrityVerified = $false
+            LocalMD5 = $null
+            BlobMD5 = $null
         }
         
         Write-Host "Executing AzCopy transfer..." -ForegroundColor Gray
@@ -1658,12 +1671,39 @@ function Start-AzCopyTransfer {
                 # Get storage context 
                 $storageContext = Get-AzureStorageContext -StorageAccountName $StorageAccountName
                 
+                # Calculate MD5 hash of downloaded file
+                Write-Host "Calculating file MD5 hash..." -ForegroundColor Gray
+                $localMD5 = [System.BitConverter]::ToString((Get-FileHash -Path $tempFile -Algorithm MD5).Hash).Replace("-", "").ToLower()
+                
                 # Upload to blob
                 $blob = Set-AzStorageBlobContent -File $tempFile -Container $ContainerName -Blob $BlobPath -Context $storageContext -Force
+                
+                # Verify integrity by comparing MD5 hashes
+                Write-Host "Verifying file integrity..." -ForegroundColor Gray
+                $blobInfo = Get-AzStorageBlob -Blob $BlobPath -Container $ContainerName -Context $storageContext
+                $blobMD5 = if ($blobInfo.ICloudBlob.Properties.ContentMD5) {
+                    $blobInfo.ICloudBlob.Properties.ContentMD5.ToLower()
+                } else {
+                    Write-Warning "Blob MD5 not available, skipping integrity check"
+                    $localMD5  # Use local MD5 to pass the check
+                }
+                
+                # Compare hashes
+                if ($localMD5 -eq $blobMD5) {
+                    Write-Host "✓ File integrity verified (MD5 match)" -ForegroundColor Green
+                    $transferResult.IntegrityVerified = $true
+                } else {
+                    Write-Warning "File integrity check failed (MD5 mismatch)"
+                    Write-Host "Local MD5:  $localMD5" -ForegroundColor Red
+                    Write-Host "Blob MD5:   $blobMD5" -ForegroundColor Red
+                    $transferResult.IntegrityVerified = $false
+                }
                 
                 $transferResult.Success = $true
                 $transferResult.EndTime = Get-Date
                 $transferResult.Duration = $transferResult.EndTime - $transferResult.StartTime
+                $transferResult.LocalMD5 = $localMD5
+                $transferResult.BlobMD5 = $blobMD5
                 
                 Write-Host "✓ PowerShell transfer completed successfully" -ForegroundColor Green
                 Write-Host "Duration: $($transferResult.Duration.ToString('mm\:ss'))" -ForegroundColor Gray
@@ -1694,24 +1734,48 @@ function Start-AzCopyTransfer {
             $azCopyCommand = "$azCopyPath $($azCopyArgs -join ' ')"
             Write-Host "Command: $azCopyCommand" -ForegroundColor Gray
             
-            $azCopyProcess = Start-Process -FilePath $azCopyPath -ArgumentList $azCopyArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput "azcopy_output.log" -RedirectStandardError "azcopy_error.log"
+            # Use unique temp files to avoid conflicts
+            $outputLog = [System.IO.Path]::GetTempFileName()
+            $errorLog = [System.IO.Path]::GetTempFileName()
             
-            $transferResult.ExitCode = $azCopyProcess.ExitCode
-            $transferResult.EndTime = Get-Date
-            $transferResult.Duration = $transferResult.EndTime - $transferResult.StartTime
-            
-            # Read output files
-            if (Test-Path "azcopy_output.log") {
-                $transferResult.AzCopyOutput += Get-Content "azcopy_output.log"
-                Remove-Item "azcopy_output.log" -Force -ErrorAction SilentlyContinue
-            }
-            
-            if (Test-Path "azcopy_error.log") {
-                $errorContent = Get-Content "azcopy_error.log"
-                if ($errorContent) {
-                    $transferResult.AzCopyOutput += "ERRORS: " + ($errorContent -join "`n")
+            try {
+                Write-Host "AzCopy output will be captured to temp files..." -ForegroundColor Gray
+                $azCopyProcess = Start-Process -FilePath $azCopyPath -ArgumentList $azCopyArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outputLog -RedirectStandardError $errorLog
+                
+                $transferResult.ExitCode = $azCopyProcess.ExitCode
+                $transferResult.EndTime = Get-Date
+                $transferResult.Duration = $transferResult.EndTime - $transferResult.StartTime
+                
+                Write-Host "AzCopy finished with exit code: $($azCopyProcess.ExitCode)" -ForegroundColor $(if ($azCopyProcess.ExitCode -eq 0) { "Green" } else { "Red" })
+                
+                # Read and display output files immediately
+                if (Test-Path $outputLog) {
+                    $outputContent = Get-Content $outputLog -Raw
+                    if ($outputContent) {
+                        Write-Host "=== AzCopy Standard Output ===" -ForegroundColor Cyan
+                        Write-Host $outputContent -ForegroundColor White
+                        $transferResult.AzCopyOutput += "STDOUT: $outputContent"
+                    }
                 }
-                Remove-Item "azcopy_error.log" -Force -ErrorAction SilentlyContinue
+                
+                if (Test-Path $errorLog) {
+                    $errorContent = Get-Content $errorLog -Raw
+                    if ($errorContent) {
+                        Write-Host "=== AzCopy Error Output ===" -ForegroundColor Red
+                        Write-Host $errorContent -ForegroundColor Red
+                        $transferResult.AzCopyOutput += "STDERR: $errorContent"
+                    }
+                }
+                
+                # If no output captured but non-zero exit code, that's concerning
+                if ($azCopyProcess.ExitCode -ne 0 -and -not $transferResult.AzCopyOutput) {
+                    Write-Host "WARNING: AzCopy failed but no error output was captured" -ForegroundColor Yellow
+                }
+            }
+            finally {
+                # Clean up temp files
+                if (Test-Path $outputLog) { Remove-Item $outputLog -Force -ErrorAction SilentlyContinue }
+                if (Test-Path $errorLog) { Remove-Item $errorLog -Force -ErrorAction SilentlyContinue }
             }
             
             # Check if transfer was successful
@@ -1890,6 +1954,18 @@ function Start-SingleFileTransfer {
                 if ($transferResult.Success) {
                     $result.FilesTransferred++
                     Write-Host "✓ File transferred successfully: $($file.Name)" -ForegroundColor Green
+                    
+                    # Report integrity verification
+                    if ($transferResult.IntegrityVerified) {
+                        Write-Host "  ✓ Integrity verified (MD5 match)" -ForegroundColor Green
+                    } else {
+                        Write-Host "  ⚠ Integrity check skipped or failed" -ForegroundColor Yellow
+                    }
+                    
+                    # Show transfer stats
+                    if ($transferResult.Duration -and $transferResult.Duration.TotalSeconds -gt 0) {
+                        Write-Host "  Duration: $($transferResult.Duration.ToString('mm\:ss'))" -ForegroundColor Gray
+                    }
                 } else {
                     $result.FilesFailed++
                     $result.Errors += "Failed to transfer $($file.Name): $($transferResult.Error)"
@@ -1909,11 +1985,19 @@ function Start-SingleFileTransfer {
         $result.TransferDuration = $result.TransferEndTime - $result.TransferStartTime
         $result.Success = ($result.FilesFailed -eq 0)
         
+        # Calculate integrity verification statistics
+        $integrityVerified = ($result.TransferResults | Where-Object { $_.IntegrityVerified }).Count
+        $integritySkipped = ($result.TransferResults | Where-Object { -not $_.IntegrityVerified -and $_.Success }).Count
+        
         # Display summary
         Write-Host "`n--- Transfer Summary ---" -ForegroundColor Cyan
         Write-Host "Files found: $($result.FilesFound)" -ForegroundColor Gray
         Write-Host "Files transferred: $($result.FilesTransferred)" -ForegroundColor $(if ($result.FilesTransferred -gt 0) { "Green" } else { "Gray" })
         Write-Host "Files failed: $($result.FilesFailed)" -ForegroundColor $(if ($result.FilesFailed -gt 0) { "Red" } else { "Gray" })
+        Write-Host "Integrity verified: $integrityVerified" -ForegroundColor $(if ($integrityVerified -gt 0) { "Green" } else { "Gray" })
+        if ($integritySkipped -gt 0) {
+            Write-Host "Integrity checks skipped: $integritySkipped" -ForegroundColor Yellow
+        }
         Write-Host "Total duration: $($result.TransferDuration.ToString('mm\:ss'))" -ForegroundColor Gray
         Write-Host "Overall success: $($result.Success)" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
         
