@@ -54,7 +54,7 @@ try {
         $storageContext = Get-AzureStorageContext -StorageAccountName $StorageAccountName
         
         Write-Host "Testing Azure Storage connection..." -ForegroundColor Gray
-        $storageTest = Test-AzureStorageConnection -StorageContext $storageContext -ContainerName $ContainerName
+        $storageTest = Test-AzureStorageConnection -StorageContext $storageContext -StorageAccountName $StorageAccountName
         
         if (-not $storageTest) {
             Write-Error "Azure Storage connection test failed"
