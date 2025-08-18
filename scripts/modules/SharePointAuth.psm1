@@ -1027,10 +1027,10 @@ function Get-SharePointFilesViaGraph {
         if ($siteInfo.SiteType -eq "OneDrive") {
             if ($targetPath) {
                 # Get specific folder contents
-                $folderUrl = "https://graph.microsoft.com/v1.0/me/drive/root:/${targetPath}:/children"
+                $folderUrl = "https://graph.microsoft.com/v1.0/drives/$($siteInfo.DriveId)/root:/${targetPath}:/children"
             } else {
                 # Get root contents
-                $folderUrl = "https://graph.microsoft.com/v1.0/me/drive/root/children"
+                $folderUrl = "https://graph.microsoft.com/v1.0/drives/$($siteInfo.DriveId)/root/children"
             }
         } else {
             if ($targetPath) {
@@ -1057,7 +1057,22 @@ function Get-SharePointFilesViaGraph {
                 break
             }
             catch {
+                $errorDetails = ""
+                if ($_.Exception.Response) {
+                    try {
+                        $responseStream = $_.Exception.Response.GetResponseStream()
+                        $reader = New-Object System.IO.StreamReader($responseStream)
+                        $errorDetails = $reader.ReadToEnd()
+                    } catch {
+                        $errorDetails = "Could not read error response"
+                    }
+                }
+                
                 Write-Warning "Attempt $retryCount failed: $($_.Exception.Message)"
+                if ($errorDetails) {
+                    Write-Host "Error details: $errorDetails" -ForegroundColor Red
+                }
+                
                 if ($retryCount -lt $maxRetries) {
                     Start-Sleep -Seconds 5
                 }
