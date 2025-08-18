@@ -1645,7 +1645,48 @@ function Start-AzCopyTransfer {
         # Execute AzCopy with authentication
         $startTime = Get-Date
         
+        # Try PowerShell download + upload method first for SharePoint URLs
+        if ($SharePointFile.DownloadUrl -and $SharePointFile.DownloadUrl -like "*sharepoint.com*") {
+            Write-Host "Using PowerShell download + blob upload method for SharePoint URL" -ForegroundColor Yellow
+            
+            $tempFile = [System.IO.Path]::GetTempFileName()
+            try {
+                Write-Host "Downloading file to temp location..." -ForegroundColor Gray
+                Invoke-WebRequest -Uri $sourceUrl -OutFile $tempFile -UseBasicParsing
+                
+                Write-Host "Uploading to blob storage..." -ForegroundColor Gray
+                # Get storage context 
+                $storageContext = Get-AzureStorageContext -StorageAccountName $StorageAccountName
+                
+                # Upload to blob
+                $blob = Set-AzStorageBlobContent -File $tempFile -Container $ContainerName -Blob $BlobPath -Context $storageContext -Force
+                
+                $transferResult.Success = $true
+                $transferResult.EndTime = Get-Date
+                $transferResult.Duration = $transferResult.EndTime - $transferResult.StartTime
+                
+                Write-Host "✓ PowerShell transfer completed successfully" -ForegroundColor Green
+                Write-Host "Duration: $($transferResult.Duration.ToString('mm\:ss'))" -ForegroundColor Gray
+                
+                # Return successful result
+                return $transferResult
+            }
+            catch {
+                Write-Warning "PowerShell method failed: $($_.Exception.Message)"
+                Write-Host "Falling back to AzCopy method..." -ForegroundColor Yellow
+            }
+            finally {
+                # Clean up temp file
+                if (Test-Path $tempFile) {
+                    Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        
+        # AzCopy method (fallback or primary for non-SharePoint URLs)
+        Write-Host "Using AzCopy method..." -ForegroundColor Gray
         try {
+            
             # Set environment variables for authentication
             $env:AZCOPY_AUTO_LOGIN_TYPE = "AZCLI"
             
