@@ -1570,20 +1570,24 @@ function Start-AzCopyTransfer {
     try {
         Write-Host "Starting AzCopy transfer for file: $($SharePointFile.Name)" -ForegroundColor Yellow
         
-        # Get current PnP connection for SharePoint access
-        $connection = Get-PnPConnection -ErrorAction SilentlyContinue
-        if (-not $connection) {
-            throw "No active SharePoint connection found"
-        }
-        
         # Get Azure context for storage authentication
         $azContext = Get-AzContext
         if (-not $azContext) {
             throw "No active Azure context found"
         }
         
-        # Construct source and destination URLs
-        $sourceUrl = $connection.Url + $SharePointFile.ServerRelativeUrl
+        # Use Graph API download URL if available, otherwise construct from SharePoint URL
+        if ($SharePointFile.DownloadUrl) {
+            Write-Host "Using Graph API download URL" -ForegroundColor Gray
+            $sourceUrl = $SharePointFile.DownloadUrl
+        } elseif ($SharePointFile.SourcePath) {
+            Write-Host "Using SharePoint web URL as fallback" -ForegroundColor Gray
+            $sourceUrl = $SharePointFile.SourcePath
+        } else {
+            throw "No valid download URL found for file: $($SharePointFile.Name)"
+        }
+        
+        # Construct destination URL
         $destUrl = "https://$StorageAccountName.blob.core.windows.net/$ContainerName/$BlobPath"
         
         Write-Host "Source: $sourceUrl" -ForegroundColor Gray
@@ -1607,7 +1611,12 @@ function Start-AzCopyTransfer {
             "--log-level=INFO"
         )
         
-        # Add OAuth authentication for SharePoint source
+        # Add authentication for different source types
+        if ($SharePointFile.DownloadUrl) {
+            # Graph API download URLs are pre-authenticated and temporary
+            Write-Host "Using pre-authenticated Graph API download URL" -ForegroundColor Gray
+        }
+        
         $azCopyArgs += "--s2s-preserve-access-tier=false"
         $azCopyArgs += "--s2s-detect-source-changed=true"
         
