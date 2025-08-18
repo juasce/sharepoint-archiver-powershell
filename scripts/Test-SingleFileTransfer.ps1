@@ -1,7 +1,7 @@
 # Test-SingleFileTransfer.ps1
 # Test script for Phase 2 single file transfer functionality
 
-#Requires -Modules Az.Accounts, Az.KeyVault, Az.Storage, PnP.PowerShell
+#Requires -Modules Az.Accounts, Az.KeyVault, Az.Storage
 
 param(
     [Parameter(Mandatory = $false)]
@@ -43,22 +43,38 @@ try {
     Write-Host "  Max Concurrency: $MaxConcurrency" -ForegroundColor Gray
     Write-Host ""
     
-    # Step 1: Initialize Authentication
+    # Step 1: Initialize Authentication (Graph API mode - skip PnP PowerShell)
     Write-Host "Step 1: Initializing Authentication..." -ForegroundColor Cyan
-    $authResult = Initialize-Authentication -SharePointUrl $SharePointUrl -StorageAccountName $StorageAccountName -KeyVaultName $KeyVaultName
-    
-    if (-not $authResult.Success) {
-        Write-Error "Authentication failed. Cannot proceed with file transfer test."
+    try {
+        # Just get Azure storage context - Graph API handles SharePoint authentication
+        Write-Host "Getting Key Vault secrets..." -ForegroundColor Gray
+        $secrets = Get-KeyVaultSecrets -KeyVaultName $KeyVaultName
+        
+        Write-Host "Setting up Azure Storage context..." -ForegroundColor Gray
+        $storageContext = Get-AzureStorageContext -StorageAccountName $StorageAccountName -ClientId $secrets.ClientId
+        
+        Write-Host "Testing Azure Storage connection..." -ForegroundColor Gray
+        $storageTest = Test-AzureStorageConnection -StorageContext $storageContext -ContainerName $ContainerName
+        
+        if (-not $storageTest) {
+            Write-Error "Azure Storage connection test failed"
+            exit 1
+        }
+        
+        Write-Host "✓ Authentication successful (Graph API mode)" -ForegroundColor Green
+        Write-Host "✓ Azure Storage accessible" -ForegroundColor Green
+    }
+    catch {
+        Write-Error "Authentication failed: $($_.Exception.Message)"
         exit 1
     }
-    
-    Write-Host "✓ Authentication successful" -ForegroundColor Green
     Write-Host ""
     
-    # Step 2: Test File Enumeration
+    # Step 2: Test File Enumeration (using Graph API)
     Write-Host "Step 2: Testing File Enumeration..." -ForegroundColor Cyan
     try {
-        $files = Get-SharePointFiles -SharePointUrl $SharePointUrl -Recursive:$Recursive
+        Write-Host "Using Graph API for file enumeration (PnP PowerShell bypassed due to SSL issues)" -ForegroundColor Yellow
+        $files = Get-SharePointFilesViaGraph -SharePointUrl $SharePointUrl -Recursive:$Recursive
         Write-Host "✓ File enumeration completed - Found $($files.Count) files" -ForegroundColor Green
         
         if ($files.Count -eq 0) {
