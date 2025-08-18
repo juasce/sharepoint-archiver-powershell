@@ -1063,6 +1063,34 @@ function Get-SharePointFilesViaGraph {
         
         Write-Host "Graph API URL: $folderUrl" -ForegroundColor Gray
         
+        # Debug: Test root access first if targeting a specific folder
+        if ($targetPath) {
+            Write-Host "DEBUG: Testing root folder access first..." -ForegroundColor Magenta
+            $rootUrl = if ($siteInfo.SiteType -eq "OneDrive") {
+                "https://graph.microsoft.com/v1.0/drives/$($siteInfo.DriveId)/root/children"
+            } else {
+                "https://graph.microsoft.com/v1.0/sites/$($siteInfo.SiteId)/drive/root/children"
+            }
+            
+            try {
+                Write-Host "DEBUG: Calling root URL: $rootUrl" -ForegroundColor Magenta
+                $rootResponse = Invoke-RestMethod -Uri $rootUrl -Headers $headers -Method Get
+                Write-Host "DEBUG: Root access successful! Found $($rootResponse.value.Count) items:" -ForegroundColor Green
+                foreach ($item in $rootResponse.value | Select-Object -First 5) {
+                    $itemType = if ($item.folder) { "FOLDER" } else { "FILE" }
+                    Write-Host "DEBUG:   [$itemType] $($item.name)" -ForegroundColor Cyan
+                }
+                if ($rootResponse.value.Count -gt 5) {
+                    Write-Host "DEBUG:   ... and $($rootResponse.value.Count - 5) more items" -ForegroundColor Cyan
+                }
+            }
+            catch {
+                Write-Host "DEBUG: Root access failed: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "DEBUG: This suggests a fundamental access issue with the drive" -ForegroundColor Red
+            }
+            Write-Host ""
+        }
+        
         # Get files from Graph API with retry logic
         $retryCount = 0
         $maxRetries = 3
@@ -1098,8 +1126,45 @@ function Get-SharePointFilesViaGraph {
             }
         }
         
+        # If the specific folder failed, try alternative path formats
+        if ($null -eq $response -and $targetPath) {
+            Write-Host "Trying alternative folder path formats..." -ForegroundColor Yellow
+            
+            $alternativePaths = @()
+            
+            # Try with different path formats
+            if ($targetPath -eq "Certs/Test_03") {
+                $alternativePaths += @(
+                    "Documents/Certs/Test_03",  # Include Documents prefix
+                    "Certs/Test%5F03",          # URL-encoded underscore
+                    "Certs/Test_03",            # Original (already tried)
+                    "/Certs/Test_03"            # With leading slash
+                )
+            }
+            
+            foreach ($altPath in $alternativePaths) {
+                if ($altPath -eq $targetPath) { continue }  # Skip already tried path
+                
+                Write-Host "Trying alternative path: $altPath" -ForegroundColor Yellow
+                $altUrl = if ($siteInfo.SiteType -eq "OneDrive") {
+                    "https://graph.microsoft.com/v1.0/drives/$($siteInfo.DriveId)/root:/$altPath:/children"
+                } else {
+                    "https://graph.microsoft.com/v1.0/sites/$($siteInfo.SiteId)/drive/root:/$altPath:/children"
+                }
+                
+                try {
+                    $response = Invoke-RestMethod -Uri $altUrl -Headers $headers -Method Get
+                    Write-Host "✓ Alternative path worked: $altPath" -ForegroundColor Green
+                    break
+                }
+                catch {
+                    Write-Host "Alternative path failed: $altPath" -ForegroundColor Gray
+                }
+            }
+        }
+        
         if ($null -eq $response) {
-            throw "Failed to get files from Graph API after $maxRetries attempts"
+            throw "Failed to get files from Graph API after $maxRetries attempts and alternative path testing"
         }
         
         Write-Host "✓ Graph API call successful - Retrieved $($response.value.Count) items" -ForegroundColor Green
