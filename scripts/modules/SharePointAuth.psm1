@@ -1576,15 +1576,15 @@ function Start-AzCopyTransfer {
             throw "No active Azure context found"
         }
         
-        # Use Graph API download URL if available, otherwise construct from SharePoint URL
-        if ($SharePointFile.DownloadUrl) {
-            Write-Host "Using Graph API download URL" -ForegroundColor Gray
-            $sourceUrl = $SharePointFile.DownloadUrl
-        } elseif ($SharePointFile.SourcePath) {
-            Write-Host "Using SharePoint web URL as fallback" -ForegroundColor Gray
+        # Use direct SharePoint file URL (webUrl) for AzCopy compatibility
+        if ($SharePointFile.SourcePath) {
+            Write-Host "Using direct SharePoint file URL" -ForegroundColor Gray
             $sourceUrl = $SharePointFile.SourcePath
+        } elseif ($SharePointFile.DownloadUrl) {
+            Write-Host "Using Graph API download URL as fallback" -ForegroundColor Gray
+            $sourceUrl = $SharePointFile.DownloadUrl
         } else {
-            throw "No valid download URL found for file: $($SharePointFile.Name)"
+            throw "No valid file URL found for file: $($SharePointFile.Name)"
         }
         
         # Construct destination URL
@@ -1611,21 +1611,16 @@ function Start-AzCopyTransfer {
             "copy",
             "`"$sourceUrl`"",
             "`"$destUrl`"",
-            "--from-to=BlobBlob",  # Tell AzCopy this is a blob-to-blob transfer for SharePoint URLs
             "--overwrite=true"
         )
         
         # Add authentication for different source types
-        if ($SharePointFile.DownloadUrl) {
-            # Graph API download URLs are pre-authenticated and temporary
-            Write-Host "Using pre-authenticated Graph API download URL" -ForegroundColor Gray
+        if ($sourceUrl -like "*sharepoint.com*") {
+            # Direct SharePoint URLs will use OAuth authentication via AzCopy
+            Write-Host "Using OAuth authentication for SharePoint URL" -ForegroundColor Gray
         }
         
-        $azCopyArgs += "--s2s-preserve-access-tier=false"
-        $azCopyArgs += "--s2s-detect-source-changed=true"
-        
-        # Set bandwidth limit (no concurrency control - AzCopy handles this automatically)
-        $azCopyArgs += "--cap-mbps=0"  # No bandwidth limit
+        # Keep it simple - let AzCopy use defaults
         
         # Create transfer result object
         $transferResult = @{
@@ -1652,9 +1647,10 @@ function Start-AzCopyTransfer {
         # Execute AzCopy with authentication
         $startTime = Get-Date
         
-        # Try PowerShell download + upload method first for SharePoint URLs
-        if ($SharePointFile.DownloadUrl -and $SharePointFile.DownloadUrl -like "*sharepoint.com*") {
-            Write-Host "Using PowerShell download + blob upload method for SharePoint URL" -ForegroundColor Yellow
+        # Try PowerShell download + upload method first for download.aspx URLs (which need special handling)
+        if ($SharePointFile.DownloadUrl -and $SharePointFile.DownloadUrl -like "*_layouts/15/download.aspx*") {
+            Write-Host "Using PowerShell download + blob upload method for Graph API download URL" -ForegroundColor Yellow
+            $sourceUrl = $SharePointFile.DownloadUrl  # Use the download.aspx URL for PowerShell method
             
             $tempFile = [System.IO.Path]::GetTempFileName()
             try {
