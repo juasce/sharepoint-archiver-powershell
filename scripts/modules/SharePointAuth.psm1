@@ -1611,13 +1611,8 @@ function Start-AzCopyTransfer {
             "copy",
             "`"$sourceUrl`"",
             "`"$destUrl`"",
-            "--overwrite=true",
-            "--blob-type=BlockBlob",
-            "--block-size-mb=100",  # 100MB blocks for large files
-            "--put-md5",
-            "--preserve-last-modified-time=true",
-            "--recursive=false",  # Single file transfer
-            "--log-level=INFO"
+            "--from-to=BlobBlob",  # Tell AzCopy this is a blob-to-blob transfer for SharePoint URLs
+            "--overwrite=true"
         )
         
         # Add authentication for different source types
@@ -1664,6 +1659,11 @@ function Start-AzCopyTransfer {
             $tempFile = [System.IO.Path]::GetTempFileName()
             try {
                 Write-Host "Downloading file to temp location..." -ForegroundColor Gray
+                
+                # Configure SSL/TLS for SharePoint downloads
+                [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+                
                 Invoke-WebRequest -Uri $sourceUrl -OutFile $tempFile -UseBasicParsing
                 
                 Write-Host "Uploading to blob storage..." -ForegroundColor Gray
