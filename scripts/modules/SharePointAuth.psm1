@@ -823,7 +823,7 @@ function Get-SharePointSiteId {
             $hostname = ([System.Uri]$urlInfo.TenantUrl).Host
             $sitePath = $urlInfo.SitePath
             
-            $siteUrl = "https://graph.microsoft.com/v1.0/sites/$hostname`:$sitePath"
+            $siteUrl = "https://graph.microsoft.com/v1.0/sites/${hostname}:${sitePath}"
             Write-Host "Calling: $siteUrl" -ForegroundColor Gray
             
             $siteResponse = Invoke-RestMethod -Uri $siteUrl -Headers $headers -Method Get
@@ -904,7 +904,7 @@ function Get-SharePointFilesViaGraph {
         if ($siteInfo.SiteType -eq "OneDrive") {
             if ($targetPath) {
                 # Get specific folder contents
-                $folderUrl = "https://graph.microsoft.com/v1.0/me/drive/root:$($targetPath):/children"
+                $folderUrl = "https://graph.microsoft.com/v1.0/me/drive/root:${targetPath}:/children"
             } else {
                 # Get root contents
                 $folderUrl = "https://graph.microsoft.com/v1.0/me/drive/root/children"
@@ -912,7 +912,7 @@ function Get-SharePointFilesViaGraph {
         } else {
             if ($targetPath) {
                 # Get specific folder contents
-                $folderUrl = "https://graph.microsoft.com/v1.0/sites/$($siteInfo.SiteId)/drive/root:$($targetPath):/children"
+                $folderUrl = "https://graph.microsoft.com/v1.0/sites/$($siteInfo.SiteId)/drive/root:${targetPath}:/children"
             } else {
                 # Get root contents
                 $folderUrl = "https://graph.microsoft.com/v1.0/sites/$($siteInfo.SiteId)/drive/root/children"
