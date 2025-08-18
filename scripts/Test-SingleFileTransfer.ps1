@@ -51,7 +51,7 @@ try {
         $secrets = Get-KeyVaultSecrets -KeyVaultName $KeyVaultName
         
         Write-Host "Setting up Azure Storage context..." -ForegroundColor Gray
-        $storageContext = Get-AzureStorageContext -StorageAccountName $StorageAccountName -ClientId $secrets.ClientId
+        $storageContext = Get-AzureStorageContext -StorageAccountName $StorageAccountName
         
         Write-Host "Testing Azure Storage connection..." -ForegroundColor Gray
         $storageTest = Test-AzureStorageConnection -StorageContext $storageContext -ContainerName $ContainerName
