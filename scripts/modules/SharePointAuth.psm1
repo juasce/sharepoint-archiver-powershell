@@ -23,11 +23,23 @@ function Get-SharePointUrlInfo {
     try {
         Write-Host "Parsing SharePoint URL: $SharePointUrl" -ForegroundColor Yellow
         
-        # Remove query parameters first
-        $cleanUrl = if ($SharePointUrl.Contains('?')) {
-            $SharePointUrl.Split('?')[0]
-        } else {
-            $SharePointUrl
+        # Handle URLs with 'id' query parameter (modern SharePoint URLs)
+        $cleanUrl = $SharePointUrl
+        $extractedPath = ""
+        
+        if ($SharePointUrl.Contains('?') -and $SharePointUrl.Contains('id=')) {
+            # Extract path from 'id' query parameter
+            $queryString = $SharePointUrl.Split('?')[1]
+            $queryParams = $queryString.Split('&')
+            foreach ($param in $queryParams) {
+                if ($param.StartsWith('id=')) {
+                    $extractedPath = [System.Web.HttpUtility]::UrlDecode($param.Substring(3))
+                    Write-Host "Extracted path from id parameter: $extractedPath" -ForegroundColor Gray
+                    break
+                }
+            }
+            # Use base URL for connection, but keep the extracted path
+            $cleanUrl = $SharePointUrl.Split('?')[0]
         }
         
         # Decode URL-encoded characters
@@ -101,31 +113,38 @@ function Get-SharePointUrlInfo {
                 $urlInfo.SitePath = "/personal/" + $userPart
                 $urlInfo.LibraryPath = "/Documents"  # Default to Documents library
                 
-                # Check if URL points to a specific folder or file
-                if ($SharePointUrl -match 'Documents%2F(.+?)(?:&|$)') {
+                # Use extracted path from 'id' parameter if available
+                if ($extractedPath) {
+                    Write-Host "  Using extracted path: $extractedPath" -ForegroundColor Gray
+                    
+                    # Parse the full path: /personal/user/Documents/Documents/Folder/SubFolder
+                    if ($extractedPath -match '/personal/[^/]+/Documents/Documents/(.+)') {
+                        # Handle nested Documents: Documents/Documents/Certs/Test_03 -> Certs/Test_03  
+                        $folderPath = $matches[1]
+                        Write-Host "  Extracted folder path (nested Documents): $folderPath" -ForegroundColor Gray
+                        
+                        # Check if it's a file (has extension) or folder
+                        if ($folderPath -match '\.[a-zA-Z0-9]+$') {
+                            Write-Host "  Detected specific file URL" -ForegroundColor Gray
+                            $urlInfo.FolderPath = [System.IO.Path]::GetDirectoryName($folderPath).Replace('\', '/')
+                            if ($urlInfo.FolderPath -eq '.') { $urlInfo.FolderPath = "" }
+                        } else {
+                            $urlInfo.FolderPath = $folderPath
+                        }
+                    } elseif ($extractedPath -match '/personal/[^/]+/Documents/(.+)') {
+                        # Handle single Documents: Documents/Certs/Test_03 -> Certs/Test_03
+                        $folderPath = $matches[1]  
+                        Write-Host "  Extracted folder path (single Documents): $folderPath" -ForegroundColor Gray
+                        $urlInfo.FolderPath = $folderPath
+                    }
+                } elseif ($SharePointUrl -match 'Documents%2F(.+?)(?:&|$)') {
+                    # Fallback to old logic for URLs without 'id' parameter
                     $decodedPath = [System.Web.HttpUtility]::UrlDecode($matches[1])
-                    Write-Host "  Decoded path from URL: $decodedPath" -ForegroundColor Gray
-                    
-                    # Clean up the path - remove any trailing query parameters
-                    $cleanPath = $decodedPath -split '&' | Select-Object -First 1
-                    Write-Host "  Cleaned path: $cleanPath" -ForegroundColor Gray
-                    
-                    # Remove "Documents" prefix since LibraryPath already includes it
-                    if ($cleanPath.StartsWith("Documents/")) {
-                        $cleanPath = $cleanPath.Substring(10) # Remove "Documents/"
-                        Write-Host "  Removed Documents prefix: $cleanPath" -ForegroundColor Gray
-                    }
-                    
-                    # Check if it's a file (has extension) or folder
-                    if ($cleanPath -match '\.[a-zA-Z0-9]+$') {
-                        Write-Host "  Detected specific file URL" -ForegroundColor Gray
-                        $urlInfo.FolderPath = [System.IO.Path]::GetDirectoryName($cleanPath).Replace('\', '/')
-                        if ($urlInfo.FolderPath -eq '.') { $urlInfo.FolderPath = "" }
-                    } else {
-                        $urlInfo.FolderPath = $cleanPath
-                    }
-                    Write-Host "  Final folder path: $($urlInfo.FolderPath)" -ForegroundColor Gray
+                    Write-Host "  Decoded path from URL pattern: $decodedPath" -ForegroundColor Gray
+                    $urlInfo.FolderPath = $decodedPath
                 }
+                
+                Write-Host "  Final folder path: $($urlInfo.FolderPath)" -ForegroundColor Gray
                 
                 $urlInfo.IsValid = $true
                 Write-Host "  Type: OneDrive (from query URL)" -ForegroundColor Cyan
